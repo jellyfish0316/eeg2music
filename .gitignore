@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/
+*.mat
+*.wav
+*.mp3
+*.flac
+*.npy
+*.npz
+
+# Checkpoints / outputs
+*.pt
+*.pth
+*.ckpt
+*.bin
+runs/
+outputs/
+checkpoints/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

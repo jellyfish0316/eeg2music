@@ -1,0 +1,23 @@
+seed: 42
+
+data:
+  eeg_channels: 125
+  eeg_time: 437
+  audio_samples: 56000
+
+  chunk_sec: 3.5
+  eeg_fs: 125
+  audio_fs: 16000
+
+  batch_size: 4
+  num_workers: 0
+
+model:
+  use_subject_adapter: true
+  subject_emb_dim: 64
+
+train:
+  device: cuda
+  lr: 0.0001
+  epochs: 3
+  grad_clip: 1.0
