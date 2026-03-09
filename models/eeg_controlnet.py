@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from .subject_adapter import SubjectAdapter
 from .eeg_projector import EEGProjector
-from .audioldm2_wrapper import DummyLatentAudioEncoder
+from .audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
 
 
 class SimpleUNet(nn.Module):
@@ -22,6 +22,15 @@ class SimpleUNet(nn.Module):
         h2 = F.silu(self.enc2(h1))
         hm = F.silu(self.mid(h2))
         hd = F.silu(self.dec1(hm))
+
+        if hd.shape[-2:] != h1.shape[-2:]:
+            hd = F.interpolate(
+                hd,
+                size=h1.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+
         out = self.out(hd + h1)
         return out
 
@@ -31,13 +40,22 @@ class EEGControlNetModel(nn.Module):
         self,
         eeg_channels: int,
         num_subjects: int,
+        device: torch.device | str | None = None,
         use_subject_adapter: bool = True,
         subject_emb_dim: int = 64,
-        latent_channels: int = 8,
+        audio_model_id: str = "cvssp/audioldm2-music",
+        audio_sample_rate: int = 16000,
+        audio_freeze_vae: bool = True,
+        audio_use_mode: bool = False,
+        latent_channels: int | None = None,
         latent_h: int = 32,
         latent_w: int = 32,
     ):
         super().__init__()
+
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device(device)
 
         self.use_subject_adapter = use_subject_adapter
 
@@ -48,20 +66,34 @@ class EEGControlNetModel(nn.Module):
                 emb_dim=subject_emb_dim,
             )
 
-        self.audio_encoder = DummyLatentAudioEncoder(
-            latent_channels=latent_channels,
-            latent_h=latent_h,
-            latent_w=latent_w,
+        self.audio_encoder = AudioLDM2MusicEncoderWrapper(
+            model_id=audio_model_id,
+            sample_rate=audio_sample_rate,
+            device=str(device),
+            dtype=torch.float16 if device.type == "cuda" else torch.float32,
+            freeze_vae=audio_freeze_vae,
+            use_mode=audio_use_mode,
         )
+
+        inferred_latent_channels = getattr(self.audio_encoder.vae.config, "latent_channels", None)
+        if latent_channels is None:
+            if inferred_latent_channels is None:
+                raise ValueError("latent_channels is None and could not be inferred from VAE config.")
+            latent_channels = int(inferred_latent_channels)
+        elif inferred_latent_channels is not None and int(inferred_latent_channels) != latent_channels:
+            raise ValueError(
+                f"latent_channels={latent_channels} does not match VAE latent_channels={int(inferred_latent_channels)}"
+            )
+        self.latent_channels = latent_channels
 
         self.projector = EEGProjector(
             in_channels=eeg_channels,
-            out_channels=latent_channels,
+            out_channels=self.latent_channels,
             out_height=latent_h,
             out_width=latent_w,
         )
 
-        self.control_unet = SimpleUNet(channels=latent_channels)
+        self.control_unet = SimpleUNet(channels=self.latent_channels)
 
     def q_sample(self, z0: torch.Tensor, noise: torch.Tensor, alpha: float = 0.8) -> torch.Tensor:
         return (alpha ** 0.5) * z0 + ((1.0 - alpha) ** 0.5) * noise
@@ -76,10 +108,26 @@ class EEGControlNetModel(nn.Module):
             eeg = self.subject_adapter(eeg, subject_idx)
 
         z0 = self.audio_encoder(audio)              # [B, C, H, W]
+        if z0.dim() != 4:
+            raise RuntimeError(f"Expected z0 to be 4D [B,C,H,W], got shape {tuple(z0.shape)}")
+        if z0.shape[1] != self.latent_channels:
+            raise RuntimeError(
+                f"z0 channels ({z0.shape[1]}) != model latent_channels ({self.latent_channels})"
+            )
+        z0 = z0.float()
+
         noise = torch.randn_like(z0)
         zt = self.q_sample(z0, noise)
 
-        eeg_cond = self.projector(eeg)              # [B, C, H, W]
+        eeg_cond = self.projector(
+            eeg,
+            target_hw=(z0.shape[2], z0.shape[3]),
+        )                                           # [B, C, H, W]
+        if eeg_cond.shape != z0.shape:
+            raise RuntimeError(
+                f"shape mismatch: z0={tuple(z0.shape)}, eeg_cond={tuple(eeg_cond.shape)}"
+            )
+        eeg_cond = eeg_cond.to(dtype=z0.dtype)
 
         # paper 精神：encoder path condition
         eps_pred = self.control_unet(zt + eeg_cond)

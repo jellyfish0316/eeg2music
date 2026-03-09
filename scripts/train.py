@@ -51,11 +51,18 @@ def main():
     # -----------------------
     # Model
     # -----------------------
+    audio_cfg = cfg.get("audio_encoder", {})
+
     model = EEGControlNetModel(
         eeg_channels=cfg["data"]["eeg_channels"],
         num_subjects=dataset.total_subjects,
         use_subject_adapter=cfg["model"]["use_subject_adapter"],
         subject_emb_dim=cfg["model"]["subject_emb_dim"],
+        device=device,
+        audio_model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
+        audio_sample_rate=audio_cfg.get("sample_rate", cfg["data"]["audio_fs"]),
+        audio_freeze_vae=audio_cfg.get("freeze_vae", True),
+        audio_use_mode=audio_cfg.get("use_mode", False),
     ).to(device)
 
     print("model parameters:", sum(p.numel() for p in model.parameters()))

@@ -16,6 +16,12 @@ model:
   use_subject_adapter: true
   subject_emb_dim: 64
 
+audio_encoder:
+  model_id: cvssp/audioldm2-music
+  sample_rate: 16000
+  freeze_vae: true
+  use_mode: false
+
 train:
   device: cuda
   lr: 0.0001
