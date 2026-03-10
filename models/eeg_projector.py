@@ -35,15 +35,25 @@ class EEGProjector(nn.Module):
         self.out_height = out_height
         self.out_width = out_width
 
-        self.proj = nn.Conv1d(prev_c, out_channels * out_height, kernel_size=1)
+        self.proj = nn.Conv1d(prev_c, out_channels, kernel_size=1)
 
-    def forward(self, eeg: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        eeg: torch.Tensor,
+        target_hw: tuple[int, int] | None = None,
+    ) -> torch.Tensor:
         # eeg: [B, C, T]
+        target_h, target_w = target_hw if target_hw is not None else (
+            self.out_height,
+            self.out_width,
+        )
+        target_len = target_h * target_w
+
         x = self.net(eeg)                    # [B, C', T']
-        x = self.proj(x)                     # [B, out_channels*out_height, T']
+        x = self.proj(x)                     # [B, out_channels, T']
         x = F.interpolate(
-            x, size=self.out_width, mode="linear", align_corners=False
-        )                                    # [B, out_channels*out_height, out_width]
+            x, size=target_len, mode="linear", align_corners=False
+        )                                    # [B, out_channels, target_h * target_w]
         b = x.shape[0]
-        x = x.view(b, self.out_channels, self.out_height, self.out_width)
+        x = x.view(b, self.out_channels, target_h, target_w)
         return x

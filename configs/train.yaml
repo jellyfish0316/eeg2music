@@ -1,6 +1,10 @@
 seed: 42
 
 data:
+  mat_path: data/EEG/song21_Imputed.mat
+  audio_path: data/songs/song21_16k.wav
+  data_key: data21
+
   eeg_channels: 125
   eeg_time: 437
   audio_samples: 56000
@@ -15,9 +19,58 @@ data:
 model:
   use_subject_adapter: true
   subject_emb_dim: 64
+  eeg_global_dim: 512
+  unet_base_channels: 128
+  prefer_audioldm_unet: true
+  audioldm_unet_kwargs:
+    image_size: 16
+    in_channels: 8
+    model_channels: 64
+    out_channels: 8
+    num_res_blocks: 2
+    attention_resolutions: [1, 2, 4]
+    dropout: 0.0
+    channel_mult: [1, 2, 4]
+    conv_resample: true
+    dims: 2
+    extra_sa_layer: false
+    extra_film_condition_dim: 512
+    use_checkpoint: false
+    use_fp16: false
+    num_heads: 4
+    num_head_channels: -1
+    num_heads_upsample: -1
+    use_scale_shift_norm: false
+    resblock_updown: false
+    use_new_attention_order: false
+    use_spatial_transformer: false
+    transformer_depth: 1
+    context_dim: null
+    n_embed: null
+    legacy: true
+
+audio_encoder:
+  model_id: cvssp/audioldm2-music
+  sample_rate: 16000
+  freeze_vae: true
+  use_mode: false
+
+latent_cache:
+  enabled: false
+  path: data/precomputed/song21_audioldm2_latents.pt
+  latent_channels: 8
+  precompute_batch_size: 16
+  precompute_use_mode: true
+
+diffusion:
+  num_train_timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
 
 train:
   device: cuda
   lr: 0.0001
-  epochs: 3
+  epochs: 1
   grad_clip: 1.0
+  log_every: 1
+  checkpoint_path: eeg_controlnet_smoke.pt

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 import scipy.io
 import numpy as np
@@ -23,6 +24,7 @@ class NMEDTDataset(Dataset):
         normalize_eeg: bool = True,
         normalize_audio: bool = True,
         text_prompt: str = "Pop music",
+        precomputed_latents_path: str | None = None,
     ):
         self.chunk_sec = chunk_sec
         self.eeg_fs = eeg_fs
@@ -32,6 +34,7 @@ class NMEDTDataset(Dataset):
         self.normalize_eeg = normalize_eeg
         self.normalize_audio = normalize_audio
         self.text_prompt = text_prompt
+        self.precomputed_latents_path = precomputed_latents_path
 
         # Load EEG from .mat
         mat = scipy.io.loadmat(mat_path)
@@ -87,6 +90,40 @@ class NMEDTDataset(Dataset):
             for chunk_idx in range(self.n_chunks):
                 self.index_map.append((subj_idx, chunk_idx))
 
+        self.z0_by_chunk: torch.Tensor | None = None
+        if self.precomputed_latents_path is not None:
+            latent_path = Path(self.precomputed_latents_path)
+            if not latent_path.exists():
+                raise FileNotFoundError(f"precomputed_latents_path not found: {latent_path}")
+
+            payload = torch.load(latent_path, map_location="cpu")
+            if isinstance(payload, dict):
+                if "z0_by_chunk" in payload:
+                    z0_by_chunk = payload["z0_by_chunk"]
+                elif "latents" in payload:
+                    z0_by_chunk = payload["latents"]
+                else:
+                    raise KeyError(
+                        "Expected key 'z0_by_chunk' (or 'latents') in latent cache file."
+                    )
+            elif torch.is_tensor(payload):
+                z0_by_chunk = payload
+            else:
+                raise TypeError(
+                    f"Unsupported latent cache format: {type(payload)}"
+                )
+
+            if not torch.is_tensor(z0_by_chunk) or z0_by_chunk.dim() != 4:
+                raise ValueError(
+                    f"Expected cached latents shape [N,C,H,W], got {type(z0_by_chunk)} "
+                    f"with shape {tuple(getattr(z0_by_chunk, 'shape', []))}"
+                )
+            if z0_by_chunk.shape[0] < self.n_chunks:
+                raise ValueError(
+                    f"Latent cache has fewer chunks than dataset: {z0_by_chunk.shape[0]} < {self.n_chunks}"
+                )
+            self.z0_by_chunk = z0_by_chunk[: self.n_chunks].float().contiguous()
+
     def __len__(self) -> int:
         return len(self.index_map)
 
@@ -114,13 +151,17 @@ class NMEDTDataset(Dataset):
             max_abs = np.max(np.abs(audio)) + 1e-8
             audio = audio / max_abs
 
-        return {
+        sample = {
             "eeg": torch.tensor(eeg, dtype=torch.float32),             # [C, T]
             "audio": torch.tensor(audio, dtype=torch.float32),         # [L]
             "subject_idx": torch.tensor(subj_idx, dtype=torch.long),
             "chunk_idx": torch.tensor(chunk_idx, dtype=torch.long),
             "text": self.text_prompt,
         }
+        if self.z0_by_chunk is not None:
+            # z0 is chunk-level latent shared across subjects.
+            sample["z0"] = self.z0_by_chunk[chunk_idx].clone()
+        return sample
 
 
 if __name__ == "__main__":
