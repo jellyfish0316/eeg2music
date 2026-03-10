@@ -1,59 +1,82 @@
 from __future__ import annotations
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class EEGProjector(nn.Module):
     def __init__(
         self,
-        in_channels: int = 125,
+        in_channels: int,
         conv_channels: list[int] | tuple[int, ...] = (256, 512, 1024, 2048),
         strides: list[int] | tuple[int, ...] = (5, 2, 2, 2),
-        out_channels: int = 8,
-        out_height: int = 32,
-        out_width: int = 32,
-    ):
+        latent_grid: tuple[int, int, int] = (8, 16, 87),
+        kernel_sizes: list[int] | tuple[int, ...] = (7, 5, 5, 5),
+        use_linear_fallback: bool = True,
+    ) -> None:
         super().__init__()
-        assert len(conv_channels) == len(strides)
+        if len(conv_channels) != len(strides):
+            raise ValueError("conv_channels and strides must have the same length.")
+        if len(kernel_sizes) != len(conv_channels):
+            raise ValueError("kernel_sizes and conv_channels must have the same length.")
 
-        layers = []
-        prev_c = in_channels
-        kernels = [7, 5, 5, 5]
+        self.latent_channels, self.latent_height, self.latent_width = [int(v) for v in latent_grid]
+        self.target_length = self.latent_height * self.latent_width
+        self.target_elements = self.latent_channels * self.target_length
+        self.use_linear_fallback = bool(use_linear_fallback)
 
-        for c, s, k in zip(conv_channels, strides, kernels):
-            layers.extend([
-                nn.Conv1d(prev_c, c, kernel_size=k, stride=s, padding=k // 2),
-                nn.GroupNorm(8, c),
-                nn.SiLU(),
-            ])
-            prev_c = c
+        prev_channels = int(in_channels)
+        layers: list[nn.Module] = []
+        for out_channels, stride, kernel_size in zip(conv_channels, strides, kernel_sizes):
+            out_channels = int(out_channels)
+            layers.extend(
+                [
+                    nn.Conv1d(
+                        prev_channels,
+                        out_channels,
+                        kernel_size=int(kernel_size),
+                        stride=int(stride),
+                        padding=int(kernel_size) // 2,
+                    ),
+                    nn.GroupNorm(self._group_count(out_channels), out_channels),
+                    nn.SiLU(),
+                ]
+            )
+            prev_channels = out_channels
+        self.temporal_conv = nn.Sequential(*layers)
+        self.channel_proj = nn.Conv1d(prev_channels, self.latent_channels, kernel_size=1)
+        self.linear_fallback: nn.Linear | None = None
 
-        self.net = nn.Sequential(*layers)
+    @staticmethod
+    def _group_count(channels: int) -> int:
+        for groups in (32, 16, 8, 4, 2, 1):
+            if channels % groups == 0:
+                return groups
+        return 1
 
-        self.out_channels = out_channels
-        self.out_height = out_height
-        self.out_width = out_width
+    @property
+    def latent_grid(self) -> tuple[int, int, int]:
+        return (self.latent_channels, self.latent_height, self.latent_width)
 
-        self.proj = nn.Conv1d(prev_c, out_channels, kernel_size=1)
+    def _get_linear_fallback(self, in_features: int, device: torch.device, dtype: torch.dtype) -> nn.Linear:
+        if self.linear_fallback is None or self.linear_fallback.in_features != in_features:
+            self.linear_fallback = nn.Linear(in_features, self.target_elements)
+        return self.linear_fallback.to(device=device, dtype=dtype)
 
-    def forward(
-        self,
-        eeg: torch.Tensor,
-        target_hw: tuple[int, int] | None = None,
-    ) -> torch.Tensor:
-        # eeg: [B, C, T]
-        target_h, target_w = target_hw if target_hw is not None else (
-            self.out_height,
-            self.out_width,
-        )
-        target_len = target_h * target_w
+    def forward(self, eeg: torch.Tensor) -> torch.Tensor:
+        x = self.temporal_conv(eeg)
+        x = self.channel_proj(x)
+        batch_size, channels, length = x.shape
+        if length == self.target_length:
+            return x.view(batch_size, channels, self.latent_height, self.latent_width)
 
-        x = self.net(eeg)                    # [B, C', T']
-        x = self.proj(x)                     # [B, out_channels, T']
-        x = F.interpolate(
-            x, size=target_len, mode="linear", align_corners=False
-        )                                    # [B, out_channels, target_h * target_w]
-        b = x.shape[0]
-        x = x.view(b, self.out_channels, target_h, target_w)
-        return x
+        if not self.use_linear_fallback:
+            raise RuntimeError(
+                "Projector temporal length does not match checkpoint-derived latent grid "
+                f"(got {length}, expected {self.target_length}) and linear fallback is disabled."
+            )
+
+        flat = x.reshape(batch_size, channels * length)
+        linear = self._get_linear_fallback(flat.shape[1], device=flat.device, dtype=flat.dtype)
+        flat = linear(flat)
+        return flat.view(batch_size, self.latent_channels, self.latent_height, self.latent_width)

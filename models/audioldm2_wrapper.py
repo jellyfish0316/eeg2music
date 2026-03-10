@@ -1,4 +1,3 @@
-import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -59,10 +58,6 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
             for p in self.vae.parameters():
                 p.requires_grad = False
 
-        # AudioLDM2 uses log-mel spectrograms before the VAE.
-        # These parameters are conservative defaults for AudioLDM2-style 16k audio.
-        # You should verify them against the exact checkpoint config / preprocessing
-        # you want to match.
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
             sample_rate=sample_rate,
             n_fft=1024,
@@ -77,8 +72,6 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
             norm="slaney",
             mel_scale="slaney",
         ).to(device)
-
-        # For numerical stability
         self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(
             stype="power", top_db=80
         ).to(device)
@@ -101,18 +94,22 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
 
         waveform = waveform.to(device=self.device_name, dtype=torch.float32)
 
-        # Optional safety clamp if your dataset occasionally exceeds [-1, 1]
         waveform = waveform.clamp(-1.0, 1.0)
 
-        mel = self.mel_transform(waveform)          # [B, n_mels, n_frames]
-        mel_db = self.amplitude_to_db(mel)          # log-like mel scale
-
-        # Normalize roughly to a VAE-friendly range.
-        # You may later replace this with the exact AudioLDM2 preprocessing once verified.
-        mel_db = mel_db / 80.0                      # roughly [-1, 0]
-        mel_db = mel_db.unsqueeze(1)                # [B, 1, n_mels, n_frames]
+        mel = self.mel_transform(waveform)
+        mel_db = self.amplitude_to_db(mel)
+        mel_db = mel_db / 80.0
+        mel_db = mel_db.unsqueeze(1)
 
         return mel_db.to(dtype=self.dtype)
+
+    @torch.no_grad()
+    def infer_latent_shape(self, num_audio_samples: int) -> tuple[int, int, int]:
+        dummy_waveform = torch.zeros(1, int(num_audio_samples), device=self.device_name, dtype=torch.float32)
+        latents = self(dummy_waveform)
+        if latents.dim() != 4:
+            raise RuntimeError(f"Expected latent tensor [B,C,H,W], got {tuple(latents.shape)}")
+        return tuple(int(v) for v in latents.shape[1:])
 
     @torch.no_grad()
     def encode_mel(

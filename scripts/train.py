@@ -4,6 +4,11 @@ import argparse
 import json
 import time
 from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import torch
 import yaml
@@ -11,6 +16,7 @@ from torch.utils.data import DataLoader
 
 from datasets.condition_nmedt_dataset import ConditionNMEDTDataset
 from models.eeg_controlnet import EEGControlNetModel
+from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
 from utils.loso import create_loso_subject_splits
 from utils.seed import set_seed
 
@@ -48,12 +54,40 @@ def apply_freeze_policy(model: EEGControlNetModel, control_cfg: dict) -> dict[st
     for p in model.parameters():
         p.requires_grad = False
 
-    names = list(control_cfg.get("trainable_modules", ["eeg_global_encoder", "eeg_hint_encoder", "control_branch"]))
+    names = list(control_cfg.get("trainable_modules", ["subject_adapter", "projector", "control_branch"]))
     stats: dict[str, int] = {}
     for n in names:
         stats[n] = _set_trainable(getattr(model, n, None), True)
     stats["total_trainable"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return stats
+
+
+def derive_latent_grid(
+    cfg: dict,
+    *,
+    dataset: ConditionNMEDTDataset,
+    device: torch.device,
+) -> tuple[int, int, int]:
+    latent_cfg = cfg.get("latent_cache", {})
+    audio_cfg = cfg.get("audio_encoder", {})
+    data_cfg = cfg["data"]
+    projector_cfg = cfg["model"].get("projector", {})
+
+    configured = projector_cfg.get("lat_grid")
+    if configured is not None:
+        return tuple(int(v) for v in configured)
+    if dataset.z0_by_chunk is not None:
+        return tuple(int(v) for v in dataset.z0_by_chunk.shape[1:])
+
+    encoder = AudioLDM2MusicEncoderWrapper(
+        model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
+        sample_rate=int(audio_cfg.get("sample_rate", data_cfg["audio_fs"])),
+        device=str(device),
+        dtype=torch.float16 if device.type == "cuda" else torch.float32,
+        freeze_vae=bool(audio_cfg.get("freeze_vae", True)),
+        use_mode=bool(latent_cfg.get("precompute_use_mode", True)),
+    )
+    return encoder.infer_latent_shape(int(data_cfg["audio_samples"]))
 
 
 def build_condition_jobs(exp_cfg: dict) -> list[dict[str, str]]:
@@ -107,6 +141,9 @@ def build_dataloader(
         eeg_fs=int(data_cfg["eeg_fs"]),
         audio_fs=int(data_cfg["audio_fs"]),
         subjects=subjects,
+        normalize_eeg=bool(data_cfg.get("eeg_preprocessing", {}).get("per_channel_normalization", True)),
+        text_prompt=str(data_cfg.get("text_prompt", "Pop music")),
+        eeg_preprocessing=data_cfg.get("eeg_preprocessing", None),
         precomputed_latents_path=latent_cfg.get("path") if use_precomputed_latents else None,
     )
     loader = DataLoader(
@@ -203,6 +240,7 @@ def run_one_condition(
     latent_channels = latent_cfg.get("latent_channels")
     if latent_channels is None and ds_train.z0_by_chunk is not None:
         latent_channels = int(ds_train.z0_by_chunk.shape[1])
+    latent_grid = derive_latent_grid(cfg, dataset=ds_train, device=device)
 
     model = EEGControlNetModel(
         eeg_channels=int(ds_train.eeg_out_channels),
@@ -216,7 +254,10 @@ def run_one_condition(
         audio_use_mode=bool(audio_cfg.get("use_mode", False)),
         enable_audio_encoder=not use_precomputed_latents,
         latent_channels=latent_channels,
-        eeg_global_dim=int(model_cfg.get("eeg_global_dim", 512)),
+        latent_grid=latent_grid,
+        projector_channels=tuple(model_cfg.get("projector", {}).get("channels", [256, 512, 1024, 2048])),
+        projector_strides=tuple(model_cfg.get("projector", {}).get("strides", [5, 2, 2, 2])),
+        projector_use_linear_fallback=bool(model_cfg.get("projector", {}).get("use_linear_fallback", True)),
         diffusion_num_steps=int(cfg["diffusion"]["num_train_timesteps"]),
         diffusion_beta_start=float(cfg["diffusion"]["beta_start"]),
         diffusion_beta_end=float(cfg["diffusion"]["beta_end"]),
@@ -224,9 +265,10 @@ def run_one_condition(
         prefer_audioldm_unet=bool(model_cfg.get("prefer_audioldm_unet", False)),
         audioldm_unet_kwargs=unet_kwargs,
         controlnet_enabled=bool(control_cfg.get("enabled", False)),
-        controlnet_hint_channels=int(control_cfg.get("hint_channels", 64)),
         controlnet_zero_init=bool(control_cfg.get("zero_init", True)),
         controlnet_scale=float(control_cfg.get("control_scale", 1.0)),
+        controlnet_copy_encoder_weights=bool(control_cfg.get("copy_encoder_weights", True)),
+        controlnet_inject_middle_block=bool(control_cfg.get("inject_middle_block", True)),
     ).to(device)
 
     freeze_stats = apply_freeze_policy(model, control_cfg)

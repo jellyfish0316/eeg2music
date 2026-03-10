@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import math
 import warnings
+
 import torch
 import torch.nn as nn
 
 try:
-    from audioldm_train.modules.diffusionmodules.openaimodel import UNetModel as AudioLDMUNetModel
+    from vendor.audioldm_min.openaimodel import UNetModel as AudioLDMUNetModel
 except Exception:
     AudioLDMUNetModel = None
 
@@ -33,34 +34,30 @@ class AudioLDMUNetWrapper(nn.Module):
     def __init__(
         self,
         latent_channels: int = 8,
-        extra_film_condition_dim: int = 512,
         base_channels: int = 128,
         prefer_audioldm_unet: bool = False,
         audioldm_unet_kwargs: dict | None = None,
     ) -> None:
         super().__init__()
-        self.latent_channels = latent_channels
-        self.extra_film_condition_dim = extra_film_condition_dim
+        self.latent_channels = int(latent_channels)
         self.using_audioldm_unet = False
         self.audioldm_unet_available = AudioLDMUNetModel is not None
         self._input_block_channels: list[int] | None = None
-        self._input_block_ds: list[int] | None = None
         self._middle_block_channel: int | None = None
-        self._middle_block_ds: int | None = None
 
         unet_kwargs = dict(audioldm_unet_kwargs or {})
         if prefer_audioldm_unet and self.audioldm_unet_available:
             unet_kwargs.setdefault("image_size", 16)
-            unet_kwargs.setdefault("in_channels", latent_channels)
-            unet_kwargs.setdefault("model_channels", base_channels)
-            unet_kwargs.setdefault("out_channels", latent_channels)
+            unet_kwargs.setdefault("in_channels", self.latent_channels)
+            unet_kwargs.setdefault("model_channels", int(base_channels))
+            unet_kwargs.setdefault("out_channels", self.latent_channels)
             unet_kwargs.setdefault("num_res_blocks", 2)
             unet_kwargs.setdefault("attention_resolutions", (2, 4, 8))
             unet_kwargs.setdefault("channel_mult", (1, 2, 4, 8))
             unet_kwargs.setdefault("dropout", 0.0)
             unet_kwargs.setdefault("num_head_channels", 32)
             unet_kwargs.setdefault("use_scale_shift_norm", True)
-            unet_kwargs.setdefault("extra_film_condition_dim", extra_film_condition_dim)
+            unet_kwargs.setdefault("extra_film_condition_dim", None)
             try:
                 self.backbone = AudioLDMUNetModel(**unet_kwargs)
                 self.using_audioldm_unet = True
@@ -72,69 +69,75 @@ class AudioLDMUNetWrapper(nn.Module):
                     RuntimeWarning,
                 )
 
-        fallback_model_channels = int(unet_kwargs.get("model_channels", base_channels))
-        fallback_dropout = float(unet_kwargs.get("dropout", 0.0))
-        self.model_channels = fallback_model_channels
-        self.time_embed_dim = fallback_model_channels * 4
+        self.model_channels = int(unet_kwargs.get("model_channels", base_channels))
+        self.time_embed_dim = self.model_channels * 4
         self.time_embed = nn.Sequential(
-            nn.Linear(fallback_model_channels, self.time_embed_dim),
+            nn.Linear(self.model_channels, self.time_embed_dim),
             nn.SiLU(),
             nn.Linear(self.time_embed_dim, self.time_embed_dim),
         )
-        self.film = nn.Sequential(
-            nn.Linear(extra_film_condition_dim, self.time_embed_dim),
-            nn.SiLU(),
-            nn.Linear(self.time_embed_dim, self.time_embed_dim),
-        )
-        self.in_conv = nn.Conv2d(latent_channels, fallback_model_channels, kernel_size=3, padding=1)
-        self.norm1 = nn.GroupNorm(8, fallback_model_channels)
-        self.norm2 = nn.GroupNorm(8, fallback_model_channels)
-        self.emb_to_scale_shift_1 = nn.Linear(self.time_embed_dim * 2, 2 * fallback_model_channels)
-        self.emb_to_scale_shift_2 = nn.Linear(self.time_embed_dim * 2, 2 * fallback_model_channels)
-        self.mid1 = nn.Conv2d(fallback_model_channels, fallback_model_channels, kernel_size=3, padding=1)
-        self.mid2 = nn.Conv2d(fallback_model_channels, fallback_model_channels, kernel_size=3, padding=1)
-        self.dropout = nn.Dropout(fallback_dropout)
-        self.out_conv = nn.Conv2d(fallback_model_channels, latent_channels, kernel_size=3, padding=1)
-        self._input_block_channels = [fallback_model_channels]
-        self._input_block_ds = [1]
-        self._middle_block_channel = fallback_model_channels
-        self._middle_block_ds = 1
+        self.in_conv = nn.Conv2d(self.latent_channels, self.model_channels, kernel_size=3, padding=1)
+        self.norm1 = nn.GroupNorm(8, self.model_channels)
+        self.norm2 = nn.GroupNorm(8, self.model_channels)
+        self.emb_to_scale_shift_1 = nn.Linear(self.time_embed_dim, 2 * self.model_channels)
+        self.emb_to_scale_shift_2 = nn.Linear(self.time_embed_dim, 2 * self.model_channels)
+        self.mid1 = nn.Conv2d(self.model_channels, self.model_channels, kernel_size=3, padding=1)
+        self.mid2 = nn.Conv2d(self.model_channels, self.model_channels, kernel_size=3, padding=1)
+        self.dropout = nn.Dropout(float(unet_kwargs.get("dropout", 0.0)))
+        self.out_conv = nn.Conv2d(self.model_channels, self.latent_channels, kernel_size=3, padding=1)
+        self._input_block_channels = [self.model_channels]
+        self._middle_block_channel = self.model_channels
 
     @property
     def backend_name(self) -> str:
         return "audioldm_unet" if self.using_audioldm_unet else "fallback_unet"
 
+    def get_model_channels(self) -> int:
+        if self.using_audioldm_unet:
+            return int(self.backbone.model_channels)
+        return int(self.model_channels)
+
+    def get_time_embed(self) -> nn.Module:
+        return self.backbone.time_embed if self.using_audioldm_unet else self.time_embed
+
+    def get_control_input_blocks(self) -> nn.ModuleList:
+        if not self.using_audioldm_unet:
+            raise RuntimeError("Paper-aligned ControlNet requires the AudioLDM UNet backend.")
+        return self.backbone.input_blocks
+
+    def get_control_middle_block(self) -> nn.Module:
+        if not self.using_audioldm_unet:
+            raise RuntimeError("Paper-aligned ControlNet requires the AudioLDM UNet backend.")
+        return self.backbone.middle_block
+
     def _build_control_specs(self) -> None:
         if not self.using_audioldm_unet:
             return
-        model_channels = int(getattr(self.backbone, "model_channels"))
-        channel_mult = list(getattr(self.backbone, "channel_mult"))
-        num_res_blocks = int(getattr(self.backbone, "num_res_blocks"))
-        channels = [model_channels]
-        ds_factors = [1]
-        ch = model_channels
-        ds = 1
-        for level, mult in enumerate(channel_mult):
-            for _ in range(num_res_blocks):
-                ch = int(mult) * model_channels
-                channels.append(ch)
-                ds_factors.append(ds)
-            if level != len(channel_mult) - 1:
-                channels.append(ch)
-                ds_factors.append(ds)
-                ds *= 2
-        self._input_block_channels = channels
-        self._input_block_ds = ds_factors
-        self._middle_block_channel = ch
-        self._middle_block_ds = ds
+        self._input_block_channels = []
+        for block in self.backbone.input_blocks:
+            block_channels = None
+            for module in reversed(list(block)):
+                if hasattr(module, "out_channels"):
+                    block_channels = int(module.out_channels)
+                    break
+            if block_channels is None:
+                raise RuntimeError("Could not infer input block output channels for ControlNet copy.")
+            self._input_block_channels.append(block_channels)
+        middle_channels = getattr(self.backbone.middle_block[-1], "out_channels", None)
+        if middle_channels is None:
+            for module in reversed(list(self.backbone.middle_block)):
+                if hasattr(module, "out_channels"):
+                    middle_channels = int(module.out_channels)
+                    break
+        if middle_channels is None:
+            raise RuntimeError("Could not infer middle block output channels for ControlNet copy.")
+        self._middle_block_channel = int(middle_channels)
 
     @property
     def control_specs(self) -> dict[str, object]:
         return {
             "input_block_channels": list(self._input_block_channels or []),
-            "input_block_ds": list(self._input_block_ds or []),
             "middle_block_channel": int(self._middle_block_channel or 0),
-            "middle_block_ds": int(self._middle_block_ds or 1),
         }
 
     @staticmethod
@@ -171,14 +174,10 @@ class AudioLDMUNetWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        y: torch.Tensor,
         control_residuals: dict[str, object] | None = None,
         control_scale: float = 1.0,
     ) -> torch.Tensor:
-        t_emb = timestep_embedding(timesteps, self.model_channels)
-        temb = self.time_embed(t_emb)
-        yemb = self.film(y)
-        emb = torch.cat([temb, yemb], dim=-1)
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         h = self.in_conv(x).to(dtype=x.dtype)
         if control_residuals is not None:
             down = control_residuals.get("down_block_residuals", None)
@@ -209,7 +208,6 @@ class AudioLDMUNetWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        y: torch.Tensor,
         context_list: list[torch.Tensor | None],
         context_attn_mask_list: list[torch.Tensor | None],
         control_residuals: dict[str, object] | None = None,
@@ -218,10 +216,7 @@ class AudioLDMUNetWrapper(nn.Module):
         down = None if control_residuals is None else control_residuals.get("down_block_residuals", None)
         mid = None if control_residuals is None else control_residuals.get("mid_block_residual", None)
         hs = []
-        t_emb = timestep_embedding(timesteps, self.backbone.model_channels)
-        emb = self.backbone.time_embed(t_emb)
-        if self.backbone.use_extra_film_by_concat:
-            emb = torch.cat([emb, self.backbone.film_emb(y)], dim=-1)
+        emb = self.backbone.time_embed(timestep_embedding(timesteps, self.backbone.model_channels))
         h = x.type(self.backbone.dtype)
         for i, module in enumerate(self.backbone.input_blocks):
             h = module(h, emb, context_list, context_attn_mask_list)
@@ -249,7 +244,6 @@ class AudioLDMUNetWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor | None = None,
-        y: torch.Tensor | None = None,
         context_list=None,
         context_attn_mask_list=None,
         control_residuals: dict[str, object] | None = None,
@@ -259,8 +253,6 @@ class AudioLDMUNetWrapper(nn.Module):
         del kwargs
         if timesteps is None:
             raise ValueError("timesteps is required")
-        if y is None:
-            raise ValueError("y is required")
         if self.using_audioldm_unet:
             if context_list is None:
                 context_list = []
@@ -271,7 +263,6 @@ class AudioLDMUNetWrapper(nn.Module):
             eps = self._audioldm_forward_with_control(
                 x=x_in,
                 timesteps=timesteps,
-                y=y,
                 context_list=context_list,
                 context_attn_mask_list=context_attn_mask_list,
                 control_residuals=control_residuals,
@@ -281,7 +272,6 @@ class AudioLDMUNetWrapper(nn.Module):
         return self._fallback_forward(
             x=x,
             timesteps=timesteps,
-            y=y,
             control_residuals=control_residuals,
             control_scale=control_scale,
         )

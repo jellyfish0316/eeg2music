@@ -24,6 +24,7 @@ class NMEDTDataset(Dataset):
         normalize_eeg: bool = True,
         normalize_audio: bool = True,
         text_prompt: str = "Pop music",
+        eeg_preprocessing: dict[str, Any] | None = None,
         precomputed_latents_path: str | None = None,
     ):
         self.chunk_sec = chunk_sec
@@ -34,6 +35,7 @@ class NMEDTDataset(Dataset):
         self.normalize_eeg = normalize_eeg
         self.normalize_audio = normalize_audio
         self.text_prompt = text_prompt
+        self.eeg_preprocessing = dict(eeg_preprocessing or {"per_channel_normalization": normalize_eeg})
         self.precomputed_latents_path = precomputed_latents_path
 
         # Load EEG from .mat
@@ -157,6 +159,7 @@ class NMEDTDataset(Dataset):
             "subject_idx": torch.tensor(subj_idx, dtype=torch.long),
             "chunk_idx": torch.tensor(chunk_idx, dtype=torch.long),
             "text": self.text_prompt,
+            "eeg_preprocessing": self.eeg_preprocessing,
         }
         if self.z0_by_chunk is not None:
             # z0 is chunk-level latent shared across subjects.

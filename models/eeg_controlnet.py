@@ -4,12 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .subject_adapter import SubjectAdapter
-from .eeg_global_encoder import EEGGlobalEncoder
-from .eeg_hint_encoder import EEGHintEncoder
 from .audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
-from .audioldm_unet_wrapper import AudioLDMUNetWrapper
 from .audioldm_control_branch import AudioLDMControlBranch
+from .audioldm_unet_wrapper import AudioLDMUNetWrapper
+from .eeg_projector import EEGProjector
+from .subject_adapter import SubjectAdapter
 
 
 class EEGControlNetModel(nn.Module):
@@ -26,7 +25,10 @@ class EEGControlNetModel(nn.Module):
         audio_use_mode: bool = False,
         enable_audio_encoder: bool = True,
         latent_channels: int | None = None,
-        eeg_global_dim: int = 512,
+        latent_grid: tuple[int, int, int] | None = None,
+        projector_channels: tuple[int, ...] = (256, 512, 1024, 2048),
+        projector_strides: tuple[int, ...] = (5, 2, 2, 2),
+        projector_use_linear_fallback: bool = True,
         diffusion_num_steps: int = 1000,
         diffusion_beta_start: float = 1e-4,
         diffusion_beta_end: float = 2e-2,
@@ -34,17 +36,18 @@ class EEGControlNetModel(nn.Module):
         prefer_audioldm_unet: bool = False,
         audioldm_unet_kwargs: dict | None = None,
         controlnet_enabled: bool = False,
-        controlnet_hint_channels: int = 64,
         controlnet_zero_init: bool = True,
         controlnet_scale: float = 1.0,
-    ):
+        controlnet_copy_encoder_weights: bool = True,
+        controlnet_inject_middle_block: bool = True,
+    ) -> None:
         super().__init__()
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         device = torch.device(device)
 
-        self.use_subject_adapter = use_subject_adapter
-        if use_subject_adapter:
+        self.use_subject_adapter = bool(use_subject_adapter)
+        if self.use_subject_adapter:
             self.subject_adapter = SubjectAdapter(
                 num_subjects=num_subjects,
                 eeg_channels=eeg_channels,
@@ -68,20 +71,32 @@ class EEGControlNetModel(nn.Module):
             if inferred_latent_channels is None:
                 raise ValueError("latent_channels is None and could not be inferred from VAE config.")
             latent_channels = int(inferred_latent_channels)
-        elif inferred_latent_channels is not None and int(inferred_latent_channels) != latent_channels:
+        elif inferred_latent_channels is not None and int(inferred_latent_channels) != int(latent_channels):
             raise ValueError(
                 f"latent_channels={latent_channels} does not match VAE latent_channels={int(inferred_latent_channels)}"
             )
         self.latent_channels = int(latent_channels)
 
-        self.eeg_global_encoder = EEGGlobalEncoder(
+        if latent_grid is None:
+            raise ValueError("latent_grid must be checkpoint-derived before model construction.")
+        self.latent_grid = tuple(int(v) for v in latent_grid)
+        if len(self.latent_grid) != 3:
+            raise ValueError(f"Expected latent_grid=(C,H,W), got {self.latent_grid}")
+        if self.latent_grid[0] != self.latent_channels:
+            raise ValueError(
+                f"latent_grid channel dimension ({self.latent_grid[0]}) does not match latent_channels ({self.latent_channels})"
+            )
+
+        self.projector = EEGProjector(
             in_channels=eeg_channels,
-            out_dim=eeg_global_dim,
+            conv_channels=projector_channels,
+            strides=projector_strides,
+            latent_grid=self.latent_grid,
+            use_linear_fallback=projector_use_linear_fallback,
         )
 
         self.control_unet = AudioLDMUNetWrapper(
             latent_channels=self.latent_channels,
-            extra_film_condition_dim=eeg_global_dim,
             base_channels=unet_base_channels,
             prefer_audioldm_unet=prefer_audioldm_unet,
             audioldm_unet_kwargs=audioldm_unet_kwargs,
@@ -89,24 +104,20 @@ class EEGControlNetModel(nn.Module):
 
         self.controlnet_enabled = bool(controlnet_enabled)
         self.default_control_scale = float(controlnet_scale)
-        self.eeg_hint_encoder: EEGHintEncoder | None = None
         self.control_branch: AudioLDMControlBranch | None = None
         if self.controlnet_enabled:
+            if not bool(controlnet_copy_encoder_weights):
+                raise ValueError("Paper-aligned ControlNet requires copy_encoder_weights=True.")
             specs = self.control_unet.control_specs
-            self.eeg_hint_encoder = EEGHintEncoder(
-                in_channels=eeg_channels,
-                hint_channels=controlnet_hint_channels,
-            )
             self.control_branch = AudioLDMControlBranch(
-                latent_channels=self.latent_channels,
-                hint_channels=controlnet_hint_channels,
-                eeg_global_dim=eeg_global_dim,
+                input_blocks=self.control_unet.get_control_input_blocks(),
+                middle_block=self.control_unet.get_control_middle_block(),
+                time_embed=self.control_unet.get_time_embed(),
+                model_channels=self.control_unet.get_model_channels(),
                 input_block_channels=specs["input_block_channels"],
-                input_block_ds=specs["input_block_ds"],
                 middle_block_channel=specs["middle_block_channel"],
-                middle_block_ds=specs["middle_block_ds"],
-                hidden_channels=max(64, controlnet_hint_channels),
                 zero_init=controlnet_zero_init,
+                inject_middle_block=controlnet_inject_middle_block,
             )
 
         self.num_train_timesteps = int(diffusion_num_steps)
@@ -118,24 +129,13 @@ class EEGControlNetModel(nn.Module):
         )
         alphas = 1.0 - betas
         alphas_cumprod = torch.cumprod(alphas, dim=0)
-
         self.register_buffer("betas", betas, persistent=False)
         self.register_buffer("alphas_cumprod", alphas_cumprod, persistent=False)
         self.register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod), persistent=False)
-        self.register_buffer(
-            "sqrt_one_minus_alphas_cumprod",
-            torch.sqrt(1.0 - alphas_cumprod),
-            persistent=False,
-        )
+        self.register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - alphas_cumprod), persistent=False)
 
     def sample_timesteps(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        return torch.randint(
-            low=0,
-            high=self.num_train_timesteps,
-            size=(batch_size,),
-            device=device,
-            dtype=torch.long,
-        )
+        return torch.randint(0, self.num_train_timesteps, (batch_size,), device=device, dtype=torch.long)
 
     def q_sample(
         self,
@@ -160,7 +160,7 @@ class EEGControlNetModel(nn.Module):
         noise: torch.Tensor | None = None,
         control_scale: float | None = None,
         use_control: bool = True,
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor | dict[str, object] | None]:
         if self.use_subject_adapter:
             eeg = self.subject_adapter(eeg, subject_idx)
 
@@ -183,42 +183,34 @@ class EEGControlNetModel(nn.Module):
             raise RuntimeError(f"Expected timesteps {(z0.shape[0],)}, got {tuple(timesteps.shape)}")
 
         zt, noise = self.q_sample(z0, timesteps=timesteps, noise=noise)
-        eeg_global = self.eeg_global_encoder(eeg).to(dtype=z0.dtype)
+        projected_latent = self.projector(eeg).to(dtype=z0.dtype)
 
         use_control = bool(use_control and self.controlnet_enabled)
         control_residuals = None
-        eeg_hint = None
         if use_control:
-            if self.eeg_hint_encoder is None or self.control_branch is None:
-                raise RuntimeError("controlnet_enabled=True but control modules are missing.")
-            eeg_hint = self.eeg_hint_encoder(
-                eeg,
-                target_hw=(z0.shape[2], z0.shape[3]),
-            ).to(dtype=z0.dtype)
+            if self.control_branch is None:
+                raise RuntimeError("controlnet_enabled=True but control_branch is missing.")
             control_residuals = self.control_branch(
                 zt=zt,
-                hint=eeg_hint,
+                projected_latent=projected_latent,
                 timesteps=timesteps,
-                y=eeg_global,
             )
 
         eps_pred = self.control_unet(
             x=zt,
             timesteps=timesteps,
-            y=eeg_global,
             control_residuals=control_residuals,
             control_scale=self.default_control_scale if control_scale is None else float(control_scale),
         )
         loss = F.mse_loss(eps_pred, noise)
-
         return {
             "loss": loss,
             "z0": z0,
             "zt": zt,
             "timesteps": timesteps,
             "noise": noise,
+            "projected_latent": projected_latent,
             "eps_pred": eps_pred,
-            "eeg_global": eeg_global,
-            "eeg_hint": eeg_hint,
+            "control_residuals": control_residuals,
             "use_control": torch.tensor(use_control, device=z0.device),
         }

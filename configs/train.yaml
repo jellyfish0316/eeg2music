@@ -35,13 +35,23 @@ data:
   audio_fs: 16000
   batch_size: 4
   num_workers: 0
+  text_prompt: "Pop music"
+  eeg_preprocessing:
+    per_channel_normalization: true
+    band_pass: false
+    ica: false
+    representation: raw_time_series
 
 model:
   use_subject_adapter: true
   subject_emb_dim: 64
-  eeg_global_dim: 512
   unet_base_channels: 128
   prefer_audioldm_unet: true
+  projector:
+    channels: [256, 512, 1024, 2048]
+    strides: [5, 2, 2, 2]
+    lat_grid: null
+    use_linear_fallback: true
   audioldm_unet_kwargs:
     image_size: 16
     in_channels: 8
@@ -54,7 +64,7 @@ model:
     conv_resample: true
     dims: 2
     extra_sa_layer: false
-    extra_film_condition_dim: 512
+    extra_film_condition_dim: null
     use_checkpoint: false
     use_fp16: false
     num_heads: 4
@@ -79,11 +89,12 @@ controlnet:
   enabled: true
   control_scale: 1.0
   freeze_base_unet: true
-  hint_channels: 64
+  copy_encoder_weights: true
+  inject_middle_block: true
   zero_init: true
   trainable_modules:
-    - eeg_global_encoder
-    - eeg_hint_encoder
+    - subject_adapter
+    - projector
     - control_branch
 
 latent_cache:

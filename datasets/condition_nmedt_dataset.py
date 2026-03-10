@@ -76,6 +76,7 @@ class ConditionNMEDTDataset(Dataset):
         normalize_eeg: bool = True,
         normalize_audio: bool = True,
         text_prompt: str = "Pop music",
+        eeg_preprocessing: dict[str, Any] | None = None,
         precomputed_latents_path: str | None = None,
     ) -> None:
         super().__init__()
@@ -99,6 +100,7 @@ class ConditionNMEDTDataset(Dataset):
         self.normalize_eeg = normalize_eeg
         self.normalize_audio = normalize_audio
         self.text_prompt = text_prompt
+        self.eeg_preprocessing = dict(eeg_preprocessing or {"per_channel_normalization": normalize_eeg})
         self.precomputed_latents_path = precomputed_latents_path
 
         self.instrument_to_id = {inst: i for i, inst in enumerate(self.active_instruments)}
@@ -250,6 +252,7 @@ class ConditionNMEDTDataset(Dataset):
             "trial_id": torch.tensor(trial_id, dtype=torch.long),
             "is_passive": torch.tensor(bool(is_passive)),
             "text": self.text_prompt,
+            "eeg_preprocessing": self.eeg_preprocessing,
         }
         if self.z0_by_chunk is not None:
             sample["z0"] = self.z0_by_chunk[chunk_idx].clone()
