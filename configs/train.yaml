@@ -1,18 +1,38 @@
 seed: 42
 
+experiment:
+  active_instruments: [drum, guitar, vocal]
+  conditions: [multi_attention, passive_x3]
+  seed: 42
+  num_folds: 10
+  fold_index: 0
+
 data:
+  # Default fallback source (used when condition_sources missing keys)
   mat_path: data/EEG/song21_Imputed.mat
   audio_path: data/songs/song21_16k.wav
   data_key: data21
 
-  eeg_channels: 125
+  # Condition-specific EEG sources; replace with your own files/keys.
+  condition_sources:
+    passive:
+      mat_path: data/EEG/song21_Imputed.mat
+      data_key: data21
+    drum:
+      mat_path: data/EEG/song21_Imputed.mat
+      data_key: data21
+    guitar:
+      mat_path: data/EEG/song21_Imputed.mat
+      data_key: data21
+    vocal:
+      mat_path: data/EEG/song21_Imputed.mat
+      data_key: data21
+
   eeg_time: 437
   audio_samples: 56000
-
   chunk_sec: 3.5
   eeg_fs: 125
   audio_fs: 16000
-
   batch_size: 4
   num_workers: 0
 
@@ -55,8 +75,19 @@ audio_encoder:
   freeze_vae: true
   use_mode: false
 
+controlnet:
+  enabled: true
+  control_scale: 1.0
+  freeze_base_unet: true
+  hint_channels: 64
+  zero_init: true
+  trainable_modules:
+    - eeg_global_encoder
+    - eeg_hint_encoder
+    - control_branch
+
 latent_cache:
-  enabled: false
+  enabled: true
   path: data/precomputed/song21_audioldm2_latents.pt
   latent_channels: 8
   precompute_batch_size: 16
@@ -67,10 +98,17 @@ diffusion:
   beta_start: 0.0001
   beta_end: 0.02
 
+split:
+  loso:
+    enabled: true
+  val_ratio: 0.1
+
 train:
   device: cuda
   lr: 0.0001
   epochs: 1
   grad_clip: 1.0
-  log_every: 1
-  checkpoint_path: eeg_controlnet_smoke.pt
+  log_every: 10
+  run_mode: single_fold
+  output_root: outputs/loso_runs
+  checkpoint_name: model.pt

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import argparse
+import json
 import time
-import yaml
+from pathlib import Path
+
 import torch
+import yaml
 from torch.utils.data import DataLoader
 
-from datasets.nmedt_dataset import NMEDTDataset
+from datasets.condition_nmedt_dataset import ConditionNMEDTDataset
 from models.eeg_controlnet import EEGControlNetModel
+from utils.loso import create_loso_subject_splits
 from utils.seed import set_seed
 
 
@@ -15,103 +20,248 @@ def load_config(path: str):
         return yaml.safe_load(f)
 
 
-def main():
-    cfg = load_config("configs/train.yaml")
-    set_seed(cfg["seed"])
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Condition-aware LOSO trainer")
+    p.add_argument("--config", type=str, default="configs/train.yaml")
+    p.add_argument("--fold", type=int, default=None, help="Run a single fold index")
+    p.add_argument("--all-folds", action="store_true", help="Run all LOSO folds")
+    p.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch")
+    return p.parse_args()
 
-    device = torch.device(
-        cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
-    )
-    log_every = int(cfg["train"].get("log_every", 10))
 
-    print(
-        f"device={device} cuda_available={torch.cuda.is_available()} "
-        f"cuda_device_count={torch.cuda.device_count()}",
-        flush=True,
-    )
+def _set_trainable(module: torch.nn.Module | None, enabled: bool) -> int:
+    if module is None:
+        return 0
+    c = 0
+    for p in module.parameters():
+        p.requires_grad = enabled
+        c += p.numel()
+    return c
 
+
+def apply_freeze_policy(model: EEGControlNetModel, control_cfg: dict) -> dict[str, int]:
+    if not bool(control_cfg.get("enabled", False)):
+        return {"total_trainable": sum(p.numel() for p in model.parameters() if p.requires_grad)}
+    if not bool(control_cfg.get("freeze_base_unet", True)):
+        return {"total_trainable": sum(p.numel() for p in model.parameters() if p.requires_grad)}
+
+    for p in model.parameters():
+        p.requires_grad = False
+
+    names = list(control_cfg.get("trainable_modules", ["eeg_global_encoder", "eeg_hint_encoder", "control_branch"]))
+    stats: dict[str, int] = {}
+    for n in names:
+        stats[n] = _set_trainable(getattr(model, n, None), True)
+    stats["total_trainable"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return stats
+
+
+def build_condition_jobs(exp_cfg: dict) -> list[dict[str, str]]:
+    active = list(exp_cfg.get("active_instruments", []))
+    conditions = list(exp_cfg.get("conditions", ["multi_attention", "single_repeated", "passive_x3"]))
+    jobs: list[dict[str, str]] = []
+
+    for c in conditions:
+        if c == "single_repeated":
+            for inst in active:
+                jobs.append(
+                    {
+                        "condition_name": f"single_repeated_{inst}",
+                        "condition_type": "single_repeated",
+                        "target_instrument": inst,
+                    }
+                )
+        else:
+            jobs.append(
+                {
+                    "condition_name": c,
+                    "condition_type": c,
+                    "target_instrument": "",
+                }
+            )
+    return jobs
+
+
+def build_dataloader(
+    cfg: dict,
+    *,
+    condition_type: str,
+    target_instrument: str | None,
+    subjects: list[int],
+    shuffle: bool,
+) -> tuple[ConditionNMEDTDataset, DataLoader]:
     data_cfg = cfg["data"]
+    exp_cfg = cfg.get("experiment", {})
     latent_cfg = cfg.get("latent_cache", {})
     use_precomputed_latents = bool(latent_cfg.get("enabled", False))
-    precomputed_latents_path = latent_cfg.get("path")
 
-    dataset = NMEDTDataset(
+    dataset = ConditionNMEDTDataset(
+        condition_type=condition_type,
+        active_instruments=list(exp_cfg.get("active_instruments", ["drum", "guitar", "vocal"])),
+        target_instrument=target_instrument if target_instrument else None,
         mat_path=data_cfg.get("mat_path", "data/EEG/song21_Imputed.mat"),
         audio_path=data_cfg.get("audio_path", "data/songs/song21_16k.wav"),
         data_key=data_cfg.get("data_key", "data21"),
-        chunk_sec=data_cfg["chunk_sec"],
-        eeg_fs=data_cfg["eeg_fs"],
-        audio_fs=data_cfg["audio_fs"],
-        precomputed_latents_path=precomputed_latents_path if use_precomputed_latents else None,
+        condition_sources=data_cfg.get("condition_sources", None),
+        chunk_sec=float(data_cfg["chunk_sec"]),
+        eeg_fs=int(data_cfg["eeg_fs"]),
+        audio_fs=int(data_cfg["audio_fs"]),
+        subjects=subjects,
+        precomputed_latents_path=latent_cfg.get("path") if use_precomputed_latents else None,
     )
-
     loader = DataLoader(
         dataset,
-        batch_size=data_cfg["batch_size"],
-        shuffle=True,
-        num_workers=data_cfg["num_workers"],
+        batch_size=int(data_cfg["batch_size"]),
+        shuffle=shuffle,
+        num_workers=int(data_cfg.get("num_workers", 0)),
     )
-    print("dataset size:", len(dataset), flush=True)
+    return dataset, loader
 
-    audio_cfg = cfg.get("audio_encoder", {})
+
+@torch.no_grad()
+def evaluate_loss(
+    model: EEGControlNetModel,
+    loader: DataLoader,
+    device: torch.device,
+    control_cfg: dict,
+    max_steps: int | None = None,
+) -> float:
+    model.eval()
+    losses = []
+    for step, batch in enumerate(loader):
+        if max_steps is not None and step >= max_steps:
+            break
+        eeg = batch["eeg"].to(device)
+        subject_idx = batch["subject_idx"].to(device)
+        timesteps = model.sample_timesteps(batch_size=eeg.shape[0], device=device)
+        batch_audio = None
+        batch_z0 = None
+        if "z0" in batch:
+            batch_z0 = batch["z0"].to(device)
+        else:
+            batch_audio = batch["audio"].to(device)
+        out = model(
+            eeg=eeg,
+            subject_idx=subject_idx,
+            audio=batch_audio,
+            z0=batch_z0,
+            timesteps=timesteps,
+            use_control=bool(control_cfg.get("enabled", False)),
+            control_scale=float(control_cfg.get("control_scale", 1.0)),
+        )
+        losses.append(float(out["loss"].item()))
+    model.train()
+    if len(losses) == 0:
+        return float("nan")
+    return float(sum(losses) / len(losses))
+
+
+def run_one_condition(
+    cfg: dict,
+    *,
+    fold_meta: dict,
+    condition_job: dict[str, str],
+    device: torch.device,
+    output_dir: Path,
+    max_steps: int | None = None,
+) -> dict[str, object]:
+    data_cfg = cfg["data"]
     model_cfg = cfg["model"]
-    unet_kwargs = model_cfg.get("audioldm_unet_kwargs")
-    if unet_kwargs is None:
-        unet_kwargs = cfg.get("audioldm_unet_kwargs", {})
+    audio_cfg = cfg.get("audio_encoder", {})
+    latent_cfg = cfg.get("latent_cache", {})
+    control_cfg = cfg.get("controlnet", {})
+    train_cfg = cfg["train"]
 
+    condition_name = condition_job["condition_name"]
+    condition_type = condition_job["condition_type"]
+    target_instrument = condition_job["target_instrument"] or None
+
+    ds_train, dl_train = build_dataloader(
+        cfg,
+        condition_type=condition_type,
+        target_instrument=target_instrument,
+        subjects=fold_meta["train_subjects"],
+        shuffle=True,
+    )
+    ds_val, dl_val = build_dataloader(
+        cfg,
+        condition_type=condition_type,
+        target_instrument=target_instrument,
+        subjects=fold_meta["val_subjects"],
+        shuffle=False,
+    )
+    ds_test, dl_test = build_dataloader(
+        cfg,
+        condition_type=condition_type,
+        target_instrument=target_instrument,
+        subjects=fold_meta["test_subjects"],
+        shuffle=False,
+    )
+
+    unet_kwargs = model_cfg.get("audioldm_unet_kwargs", {})
+    use_precomputed_latents = bool(latent_cfg.get("enabled", False))
     latent_channels = latent_cfg.get("latent_channels")
-    if latent_channels is None and dataset.z0_by_chunk is not None:
-        latent_channels = int(dataset.z0_by_chunk.shape[1])
+    if latent_channels is None and ds_train.z0_by_chunk is not None:
+        latent_channels = int(ds_train.z0_by_chunk.shape[1])
 
     model = EEGControlNetModel(
-        eeg_channels=data_cfg["eeg_channels"],
-        num_subjects=dataset.total_subjects,
-        use_subject_adapter=model_cfg["use_subject_adapter"],
-        subject_emb_dim=model_cfg["subject_emb_dim"],
+        eeg_channels=int(ds_train.eeg_out_channels),
+        num_subjects=int(ds_train.total_subjects),
+        use_subject_adapter=bool(model_cfg.get("use_subject_adapter", True)),
+        subject_emb_dim=int(model_cfg.get("subject_emb_dim", 64)),
         device=device,
         audio_model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
         audio_sample_rate=audio_cfg.get("sample_rate", data_cfg["audio_fs"]),
-        audio_freeze_vae=audio_cfg.get("freeze_vae", True),
-        audio_use_mode=audio_cfg.get("use_mode", False),
+        audio_freeze_vae=bool(audio_cfg.get("freeze_vae", True)),
+        audio_use_mode=bool(audio_cfg.get("use_mode", False)),
         enable_audio_encoder=not use_precomputed_latents,
         latent_channels=latent_channels,
-        eeg_global_dim=model_cfg["eeg_global_dim"],
-        diffusion_num_steps=cfg["diffusion"]["num_train_timesteps"],
-        diffusion_beta_start=cfg["diffusion"]["beta_start"],
-        diffusion_beta_end=cfg["diffusion"]["beta_end"],
-        unet_base_channels=model_cfg["unet_base_channels"],
-        prefer_audioldm_unet=model_cfg.get("prefer_audioldm_unet", False),
+        eeg_global_dim=int(model_cfg.get("eeg_global_dim", 512)),
+        diffusion_num_steps=int(cfg["diffusion"]["num_train_timesteps"]),
+        diffusion_beta_start=float(cfg["diffusion"]["beta_start"]),
+        diffusion_beta_end=float(cfg["diffusion"]["beta_end"]),
+        unet_base_channels=int(model_cfg.get("unet_base_channels", 128)),
+        prefer_audioldm_unet=bool(model_cfg.get("prefer_audioldm_unet", False)),
         audioldm_unet_kwargs=unet_kwargs,
+        controlnet_enabled=bool(control_cfg.get("enabled", False)),
+        controlnet_hint_channels=int(control_cfg.get("hint_channels", 64)),
+        controlnet_zero_init=bool(control_cfg.get("zero_init", True)),
+        controlnet_scale=float(control_cfg.get("control_scale", 1.0)),
     ).to(device)
 
-    print("model parameters:", sum(p.numel() for p in model.parameters()), flush=True)
-    print("unet backend:", model.control_unet.backend_name, flush=True)
-    print("latent source:", "precomputed z0" if use_precomputed_latents else "online VAE", flush=True)
-
+    freeze_stats = apply_freeze_policy(model, control_cfg)
     optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=cfg["train"]["lr"],
+        [p for p in model.parameters() if p.requires_grad],
+        lr=float(train_cfg["lr"]),
     )
 
-    model.train()
-    for epoch in range(cfg["train"]["epochs"]):
-        for step, batch in enumerate(loader):
-            step_t0 = time.perf_counter()
+    print(
+        f"[fold {fold_meta['fold_index']}][{condition_name}] "
+        f"train={len(ds_train)} val={len(ds_val)} test={len(ds_test)} "
+        f"model_params={sum(p.numel() for p in model.parameters())} "
+        f"trainable={freeze_stats['total_trainable']}",
+        flush=True,
+    )
 
+    epochs = int(train_cfg["epochs"])
+    log_every = int(train_cfg.get("log_every", 10))
+    grad_clip = float(train_cfg.get("grad_clip", 1.0))
+    history = {"train_loss": [], "val_loss": []}
+
+    for epoch in range(epochs):
+        model.train()
+        running = []
+        for step, batch in enumerate(dl_train):
+            if max_steps is not None and step >= max_steps:
+                break
+            t0 = time.perf_counter()
             eeg = batch["eeg"].to(device)
             subject_idx = batch["subject_idx"].to(device)
-            timesteps = model.sample_timesteps(
-                batch_size=eeg.shape[0],
-                device=device,
-            )
+            timesteps = model.sample_timesteps(batch_size=eeg.shape[0], device=device)
 
             batch_audio = None
             batch_z0 = None
-            if use_precomputed_latents:
-                if "z0" not in batch:
-                    raise KeyError(
-                        "latent_cache.enabled=true but dataset batch has no 'z0'."
-                    )
+            if "z0" in batch:
                 batch_z0 = batch["z0"].to(device)
             else:
                 batch_audio = batch["audio"].to(device)
@@ -122,31 +272,186 @@ def main():
                 audio=batch_audio,
                 z0=batch_z0,
                 timesteps=timesteps,
+                use_control=bool(control_cfg.get("enabled", False)),
+                control_scale=float(control_cfg.get("control_scale", 1.0)),
             )
-
             loss = out["loss"]
             optimizer.zero_grad()
             loss.backward()
-
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                cfg["train"]["grad_clip"],
-            )
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
+            running.append(float(loss.item()))
 
             if step % log_every == 0:
-                step_dt = time.perf_counter() - step_t0
                 print(
-                    f"[epoch {epoch:02d} step {step:04d}] "
-                    f"loss={loss.item():.6f} step_s={step_dt:.2f} "
-                    f"z0={tuple(out['z0'].shape)} "
-                    f"eeg_global={tuple(out['eeg_global'].shape)} "
-                    f"t=[{out['timesteps'].min().item()},{out['timesteps'].max().item()}]",
+                    f"[fold {fold_meta['fold_index']}][{condition_name}] "
+                    f"[ep {epoch:02d} st {step:04d}] "
+                    f"loss={loss.item():.6f} step_s={time.perf_counter()-t0:.2f} "
+                    f"use_control={bool(out['use_control'].item())}",
                     flush=True,
                 )
 
-    torch.save(model.state_dict(), cfg["train"].get("checkpoint_path", "eeg_controlnet_smoke.pt"))
-    print("saved ->", cfg["train"].get("checkpoint_path", "eeg_controlnet_smoke.pt"), flush=True)
+        train_loss = float(sum(running) / max(1, len(running)))
+        val_loss = evaluate_loss(model, dl_val, device, control_cfg, max_steps=max_steps)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        print(
+            f"[fold {fold_meta['fold_index']}][{condition_name}] epoch={epoch} "
+            f"train_loss={train_loss:.6f} val_loss={val_loss:.6f}",
+            flush=True,
+        )
+
+    test_loss = evaluate_loss(model, dl_test, device, control_cfg, max_steps=max_steps)
+    ckpt_name = cfg["train"].get("checkpoint_name", "model.pt")
+    ckpt_path = output_dir / ckpt_name
+    torch.save(model.state_dict(), ckpt_path)
+
+    return {
+        "fold_index": int(fold_meta["fold_index"]),
+        "condition_name": condition_name,
+        "condition_type": condition_type,
+        "target_instrument": target_instrument,
+        "train_subjects": fold_meta["train_subjects"],
+        "val_subjects": fold_meta["val_subjects"],
+        "test_subjects": fold_meta["test_subjects"],
+        "history": history,
+        "test_loss": test_loss,
+        "trainable_params": int(freeze_stats["total_trainable"]),
+        "total_params": int(sum(p.numel() for p in model.parameters())),
+        "unet_backend": model.control_unet.backend_name,
+        "checkpoint_path": str(ckpt_path),
+    }
+
+
+def build_pairwise_report(results: list[dict[str, object]]) -> list[dict[str, object]]:
+    report = []
+    by_fold: dict[int, list[dict[str, object]]] = {}
+    for r in results:
+        by_fold.setdefault(int(r["fold_index"]), []).append(r)
+
+    for fold_idx, fold_rows in by_fold.items():
+        passive = [x for x in fold_rows if x["condition_name"] == "passive_x3"]
+        if len(passive) == 0:
+            continue
+        base = passive[0]
+        base_loss = float(base["test_loss"])
+        for row in fold_rows:
+            if row["condition_name"] == "passive_x3":
+                continue
+            report.append(
+                {
+                    "fold_index": fold_idx,
+                    "compare": f"{row['condition_name']} vs passive_x3",
+                    "test_loss_condition": float(row["test_loss"]),
+                    "test_loss_passive": base_loss,
+                    "delta_condition_minus_passive": float(row["test_loss"]) - base_loss,
+                }
+            )
+    return report
+
+
+def main():
+    args = parse_args()
+    cfg = load_config(args.config)
+    set_seed(int(cfg.get("seed", 42)))
+
+    device = torch.device(
+        cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
+    )
+    print(
+        f"device={device} cuda_available={torch.cuda.is_available()} "
+        f"cuda_device_count={torch.cuda.device_count()}",
+        flush=True,
+    )
+
+    exp_cfg = cfg.get("experiment", {})
+    split_cfg = cfg.get("split", {})
+    data_cfg = cfg["data"]
+
+    # Build a temporary dataset only to read total_subjects for LOSO.
+    ds_probe, _ = build_dataloader(
+        cfg,
+        condition_type="passive_x3",
+        target_instrument=None,
+        subjects=None,
+        shuffle=False,
+    )
+    total_subjects = int(ds_probe.total_subjects)
+    print("total_subjects:", total_subjects, flush=True)
+
+    if bool(split_cfg.get("loso", {}).get("enabled", True)):
+        num_folds = exp_cfg.get("num_folds", None)
+        if num_folds is None:
+            num_folds = total_subjects
+        splits = create_loso_subject_splits(
+            total_subjects=total_subjects,
+            val_ratio=float(split_cfg.get("val_ratio", 0.1)),
+            seed=int(exp_cfg.get("seed", cfg.get("seed", 42))),
+            num_folds=int(num_folds),
+        )
+    else:
+        all_subjects = list(range(total_subjects))
+        splits = [
+            {
+                "fold_index": 0,
+                "test_subject": -1,
+                "train_subjects": all_subjects,
+                "val_subjects": all_subjects[: max(1, int(0.1 * len(all_subjects)))],
+                "test_subjects": all_subjects,
+            }
+        ]
+
+    run_mode = str(cfg["train"].get("run_mode", "single_fold"))
+    if args.fold is not None:
+        splits = [s for s in splits if int(s["fold_index"]) == int(args.fold)]
+        if len(splits) == 0:
+            raise ValueError(f"No split found for fold={args.fold}")
+    elif args.all_folds or run_mode == "all_folds":
+        pass
+    else:
+        fold_index = exp_cfg.get("fold_index", 0)
+        splits = [s for s in splits if int(s["fold_index"]) == int(fold_index)]
+        if len(splits) == 0:
+            raise ValueError(f"No split found for fold_index={fold_index}")
+
+    condition_jobs = build_condition_jobs(exp_cfg)
+    print("condition_jobs:", [x["condition_name"] for x in condition_jobs], flush=True)
+
+    output_root = Path(cfg["train"].get("output_root", "outputs/loso_runs"))
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    results: list[dict[str, object]] = []
+    for split in splits:
+        fold_dir = output_root / f"fold_{int(split['fold_index']):02d}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        for job in condition_jobs:
+            cond_dir = fold_dir / job["condition_name"]
+            cond_dir.mkdir(parents=True, exist_ok=True)
+
+            result = run_one_condition(
+                cfg,
+                fold_meta=split,
+                condition_job=job,
+                device=device,
+                output_dir=cond_dir,
+                max_steps=args.max_steps,
+            )
+            results.append(result)
+            # save latest model stats only (state_dict persistence can be added later if needed)
+            with open(cond_dir / "result.json", "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            # save path marker for compatibility
+            with open(cond_dir / "checkpoint_path.txt", "w", encoding="utf-8") as f:
+                f.write(str(result["checkpoint_path"]) + "\n")
+
+    pairwise = build_pairwise_report(results)
+    with open(output_root / "all_results.json", "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    with open(output_root / "pairwise_report.json", "w", encoding="utf-8") as f:
+        json.dump(pairwise, f, ensure_ascii=False, indent=2)
+
+    print("saved:", output_root / "all_results.json", flush=True)
+    print("saved:", output_root / "pairwise_report.json", flush=True)
 
 
 if __name__ == "__main__":
