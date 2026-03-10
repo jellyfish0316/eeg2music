@@ -32,9 +32,7 @@ class EEGControlNetModel(nn.Module):
         diffusion_num_steps: int = 1000,
         diffusion_beta_start: float = 1e-4,
         diffusion_beta_end: float = 2e-2,
-        unet_base_channels: int = 128,
-        prefer_audioldm_unet: bool = False,
-        audioldm_unet_kwargs: dict | None = None,
+        unet_cache_pipeline: bool = True,
         controlnet_enabled: bool = False,
         controlnet_zero_init: bool = True,
         controlnet_scale: float = 1.0,
@@ -96,11 +94,21 @@ class EEGControlNetModel(nn.Module):
         )
 
         self.control_unet = AudioLDMUNetWrapper(
-            latent_channels=self.latent_channels,
-            base_channels=unet_base_channels,
-            prefer_audioldm_unet=prefer_audioldm_unet,
-            audioldm_unet_kwargs=audioldm_unet_kwargs,
+            model_id=audio_model_id,
+            device=device,
+            dtype=torch.float16 if device.type == "cuda" else torch.float32,
+            cache_pipeline=bool(unet_cache_pipeline),
         )
+        unet_in_channels = getattr(self.control_unet.config, "in_channels", None)
+        unet_out_channels = getattr(self.control_unet.config, "out_channels", None)
+        if unet_in_channels is not None and int(unet_in_channels) != self.latent_channels:
+            raise ValueError(
+                f"Pretrained U-Net in_channels ({int(unet_in_channels)}) do not match latent_channels ({self.latent_channels})."
+            )
+        if unet_out_channels is not None and int(unet_out_channels) != self.latent_channels:
+            raise ValueError(
+                f"Pretrained U-Net out_channels ({int(unet_out_channels)}) do not match latent_channels ({self.latent_channels})."
+            )
 
         self.controlnet_enabled = bool(controlnet_enabled)
         self.default_control_scale = float(controlnet_scale)
@@ -109,11 +117,16 @@ class EEGControlNetModel(nn.Module):
             if not bool(controlnet_copy_encoder_weights):
                 raise ValueError("Paper-aligned ControlNet requires copy_encoder_weights=True.")
             specs = self.control_unet.control_specs
+            control_modules = self.control_unet.get_control_modules()
             self.control_branch = AudioLDMControlBranch(
-                input_blocks=self.control_unet.get_control_input_blocks(),
-                middle_block=self.control_unet.get_control_middle_block(),
-                time_embed=self.control_unet.get_time_embed(),
-                model_channels=self.control_unet.get_model_channels(),
+                conv_in=control_modules["conv_in"],
+                down_blocks=control_modules["down_blocks"],
+                mid_block=control_modules["mid_block"],
+                time_proj=self.control_unet.get_time_proj(),
+                time_embedding=self.control_unet.get_time_embedding(),
+                latent_channels=self.latent_channels,
+                latent_hw=(self.latent_grid[1], self.latent_grid[2]),
+                cross_attention_dims=self.control_unet.get_cross_attention_dims(),
                 input_block_channels=specs["input_block_channels"],
                 middle_block_channel=specs["middle_block_channel"],
                 zero_init=controlnet_zero_init,
@@ -145,8 +158,9 @@ class EEGControlNetModel(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if noise is None:
             noise = torch.randn_like(z0)
-        sqrt_alpha_t = self.sqrt_alphas_cumprod[timesteps][:, None, None, None]
-        sqrt_one_minus_alpha_t = self.sqrt_one_minus_alphas_cumprod[timesteps][:, None, None, None]
+        noise = noise.to(dtype=z0.dtype)
+        sqrt_alpha_t = self.sqrt_alphas_cumprod[timesteps][:, None, None, None].to(dtype=z0.dtype)
+        sqrt_one_minus_alpha_t = self.sqrt_one_minus_alphas_cumprod[timesteps][:, None, None, None].to(dtype=z0.dtype)
         zt = sqrt_alpha_t * z0 + sqrt_one_minus_alpha_t * noise
         return zt, noise
 
@@ -175,7 +189,8 @@ class EEGControlNetModel(nn.Module):
             raise RuntimeError(f"Expected z0 to be 4D [B,C,H,W], got {tuple(z0.shape)}")
         if z0.shape[1] != self.latent_channels:
             raise RuntimeError(f"z0 channels ({z0.shape[1]}) != model latent_channels ({self.latent_channels})")
-        z0 = z0.float()
+        unet_dtype = self.control_unet.dtype
+        z0 = z0.to(dtype=unet_dtype)
 
         if timesteps is None:
             timesteps = self.sample_timesteps(batch_size=z0.shape[0], device=z0.device)
@@ -183,7 +198,14 @@ class EEGControlNetModel(nn.Module):
             raise RuntimeError(f"Expected timesteps {(z0.shape[0],)}, got {tuple(timesteps.shape)}")
 
         zt, noise = self.q_sample(z0, timesteps=timesteps, noise=noise)
-        projected_latent = self.projector(eeg).to(dtype=z0.dtype)
+        projected_latent = self.projector(eeg).to(dtype=unet_dtype)
+        encoder_state_dict = self.control_unet.prepare_encoder_hidden_states(
+            batch_size=zt.shape[0],
+            encoder_hidden_states=None,
+            encoder_hidden_states_1=None,
+            device=zt.device,
+            dtype=unet_dtype,
+        )
 
         use_control = bool(use_control and self.controlnet_enabled)
         control_residuals = None
@@ -194,15 +216,19 @@ class EEGControlNetModel(nn.Module):
                 zt=zt,
                 projected_latent=projected_latent,
                 timesteps=timesteps,
+                encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
+                encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
             )
 
         eps_pred = self.control_unet(
             x=zt,
             timesteps=timesteps,
+            encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
+            encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
             control_residuals=control_residuals,
             control_scale=self.default_control_scale if control_scale is None else float(control_scale),
         )
-        loss = F.mse_loss(eps_pred, noise)
+        loss = F.mse_loss(eps_pred.float(), noise.float())
         return {
             "loss": loss,
             "z0": z0,

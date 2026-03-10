@@ -15,7 +15,7 @@ This repo is set up to follow the paper design more closely than the earlier `gl
 - subject-aware EEG affine modulation
 - 1D temporal EEG projector
 - ControlNet-style encoder copy with zero-initialized residual injection
-- frozen AudioLDM2 backbone
+- pretrained AudioLDM2 U-Net loaded from `AudioLDM2Pipeline`
 - latent diffusion loss on AudioLDM2 VAE latents
 
 ## Overview
@@ -73,6 +73,7 @@ Important fields:
 
 - `data.text_prompt`: constant text prompt, default `"Pop music"`
 - `data.eeg_preprocessing`: explicit preprocessing policy
+- `model.unet.cache_pipeline`: keep the diffusers pipeline object alive after extracting the pretrained U-Net
 - `model.projector.channels`: default `[256, 512, 1024, 2048]`
 - `model.projector.strides`: default `[5, 2, 2, 2]`
 - `model.projector.lat_grid`: set to `null` by default, so latent shape is derived from latent cache or checkpoint
@@ -194,7 +195,7 @@ data/precomputed/song21_audioldm2_latents.pt
 
 What is paper-aligned now:
 
-- frozen AudioLDM2 latent diffusion backbone
+- pretrained AudioLDM2 latent diffusion backbone loaded from diffusers weights
 - checkpoint-derived latent grid
 - 1D EEG projector
 - ControlNet-style encoder-copy branch with zero-conv residuals
@@ -203,7 +204,7 @@ What is paper-aligned now:
 What is still approximate:
 
 - `L(y,s)` is implemented as affine modulation, because the paper does not provide a more exact public implementation
-- exact paper code is unavailable, so some internal ControlNet block mapping is inferred from the vendored AudioLDM U-Net structure
+- exact paper code is unavailable, so some internal ControlNet block mapping is inferred from the diffusers AudioLDM2 U-Net block structure
 
 ## Decisions Made Without an Official Repo
 
@@ -221,8 +222,8 @@ Reason: `[8, 16, 87]` is a common observed result for `AudioLDM2-music`, but it 
 - A linear remap exists in the projector as a fallback, not as the primary architecture.
 Reason: the paper's intended design is `1D conv -> reshape`; the fallback only prevents training from breaking when temporal length does not land exactly on the checkpoint-derived latent grid.
 
-- The ControlNet branch in [audioldm_control_branch.py](/home/bryan/eeg/models/audioldm_control_branch.py) deep-copies the vendored AudioLDM U-Net encoder and middle block, then adds zero-initialized 1x1 convolutions.
-Reason: this is the closest faithful interpretation of the paper's `copy encoder weights + zero-conv residual injection` description, given no official code.
+- The ControlNet branch in [audioldm_control_branch.py](/home/bryan/eeg/models/audioldm_control_branch.py) deep-copies the pretrained diffusers AudioLDM2 U-Net encoder path and middle block, then adds zero-initialized 1x1 convolutions.
+Reason: this keeps the runtime backbone tied to actual pretrained weights instead of an architecture-only reimplementation.
 
 - Middle-block injection is configurable through `controlnet.inject_middle_block`, but defaults to enabled.
 Reason: the paper description includes encoder-path residual control and is compatible with ControlNet-style middle-block residuals; enabling it is the more conservative reproduction choice.
@@ -233,8 +234,8 @@ Reason: the paper-aligned path should be `EEG projector -> ControlNet residual i
 - The text prompt is fixed to `"Pop music"` by default, and EEG preprocessing is kept minimal.
 Reason: those two details are closer to the paper's stated setup than adding extra handcrafted EEG transforms.
 
-- Internal block/channel matching for ControlNet residual injection is inferred from the vendored `AudioLDM` U-Net structure in [audioldm_unet_wrapper.py](/home/bryan/eeg/models/audioldm_unet_wrapper.py).
-Reason: with no official repo, the vendored model structure is the only concrete source of truth for stage alignment.
+- Internal block/channel matching for ControlNet residual injection is inferred from the pretrained diffusers `AudioLDM2Pipeline.unet` structure in [audioldm_unet_wrapper.py](/home/bryan/eeg/models/audioldm_unet_wrapper.py).
+Reason: with no official repo, the pretrained diffusers module graph is the most concrete source of truth for stage alignment.
 
 These choices are meant to keep the repo paper-aligned in spirit and interface, while making each non-verifiable implementation choice explicit.
 
@@ -253,6 +254,6 @@ If you use this repo, cite the original paper first. A basic BibTeX stub:
 
 ## Known Practical Notes
 
-- The vendored AudioLDM code is loaded from [vendor/audioldm_min/README.md](/home/bryan/eeg/vendor/audioldm_min/README.md), not from a tracked upstream repo.
+- The runtime U-Net is loaded from `diffusers` `AudioLDM2Pipeline`; the vendored AudioLDM subset is no longer the training backbone.
 - On some systems you may see CUDA or joblib warnings during import or tests; the current smoke tests still pass under those warnings.
 - `model.projector.lat_grid` should usually stay `null` unless you intentionally want to override checkpoint-derived shape.

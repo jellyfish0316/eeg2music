@@ -26,6 +26,19 @@ def load_config(path: str):
         return yaml.safe_load(f)
 
 
+def validate_model_config(model_cfg: dict) -> None:
+    if "prefer_audioldm_unet" in model_cfg:
+        raise ValueError(
+            "model.prefer_audioldm_unet is deprecated. "
+            "The pretrained U-Net is now loaded directly from AudioLDM2Pipeline."
+        )
+    if "audioldm_unet_kwargs" in model_cfg:
+        raise ValueError(
+            "model.audioldm_unet_kwargs is deprecated. "
+            "The pretrained U-Net is now loaded directly from AudioLDM2Pipeline."
+        )
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Condition-aware LOSO trainer")
     p.add_argument("--config", type=str, default="configs/train.yaml")
@@ -186,6 +199,17 @@ def evaluate_loss(
             use_control=bool(control_cfg.get("enabled", False)),
             control_scale=float(control_cfg.get("control_scale", 1.0)),
         )
+        if not torch.isfinite(out["loss"]):
+            raise RuntimeError(
+                "Non-finite validation loss detected: "
+                f"loss={out['loss'].item()} "
+                f"timesteps={timesteps.detach().cpu().tolist()} "
+                f"z0_finite={bool(torch.isfinite(out['z0']).all().item())} "
+                f"zt_finite={bool(torch.isfinite(out['zt']).all().item())} "
+                f"noise_finite={bool(torch.isfinite(out['noise']).all().item())} "
+                f"projected_finite={bool(torch.isfinite(out['projected_latent']).all().item())} "
+                f"eps_pred_finite={bool(torch.isfinite(out['eps_pred']).all().item())}"
+            )
         losses.append(float(out["loss"].item()))
     model.train()
     if len(losses) == 0:
@@ -235,7 +259,6 @@ def run_one_condition(
         shuffle=False,
     )
 
-    unet_kwargs = model_cfg.get("audioldm_unet_kwargs", {})
     use_precomputed_latents = bool(latent_cfg.get("enabled", False))
     latent_channels = latent_cfg.get("latent_channels")
     if latent_channels is None and ds_train.z0_by_chunk is not None:
@@ -261,9 +284,7 @@ def run_one_condition(
         diffusion_num_steps=int(cfg["diffusion"]["num_train_timesteps"]),
         diffusion_beta_start=float(cfg["diffusion"]["beta_start"]),
         diffusion_beta_end=float(cfg["diffusion"]["beta_end"]),
-        unet_base_channels=int(model_cfg.get("unet_base_channels", 128)),
-        prefer_audioldm_unet=bool(model_cfg.get("prefer_audioldm_unet", False)),
-        audioldm_unet_kwargs=unet_kwargs,
+        unet_cache_pipeline=bool(model_cfg.get("unet", {}).get("cache_pipeline", True)),
         controlnet_enabled=bool(control_cfg.get("enabled", False)),
         controlnet_zero_init=bool(control_cfg.get("zero_init", True)),
         controlnet_scale=float(control_cfg.get("control_scale", 1.0)),
@@ -318,6 +339,18 @@ def run_one_condition(
                 control_scale=float(control_cfg.get("control_scale", 1.0)),
             )
             loss = out["loss"]
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    "Non-finite training loss detected: "
+                    f"condition={condition_name} epoch={epoch} step={step} "
+                    f"loss={loss.item()} "
+                    f"timesteps={timesteps.detach().cpu().tolist()} "
+                    f"z0_finite={bool(torch.isfinite(out['z0']).all().item())} "
+                    f"zt_finite={bool(torch.isfinite(out['zt']).all().item())} "
+                    f"noise_finite={bool(torch.isfinite(out['noise']).all().item())} "
+                    f"projected_finite={bool(torch.isfinite(out['projected_latent']).all().item())} "
+                    f"eps_pred_finite={bool(torch.isfinite(out['eps_pred']).all().item())}"
+                )
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -396,6 +429,7 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
     set_seed(int(cfg.get("seed", 42)))
+    validate_model_config(cfg.get("model", {}))
 
     device = torch.device(
         cfg["train"]["device"] if torch.cuda.is_available() else "cpu"

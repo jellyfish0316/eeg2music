@@ -1,157 +1,215 @@
 from __future__ import annotations
 
-import math
-import warnings
-
 import torch
 import torch.nn as nn
 
 try:
-    from vendor.audioldm_min.openaimodel import UNetModel as AudioLDMUNetModel
+    from diffusers import AudioLDM2Pipeline
 except Exception:
-    AudioLDMUNetModel = None
-
-
-def timestep_embedding(
-    timesteps: torch.Tensor,
-    dim: int,
-    max_period: int = 10000,
-) -> torch.Tensor:
-    half = dim // 2
-    if half == 0:
-        return timesteps.float().unsqueeze(-1)
-    freqs = torch.exp(
-        -math.log(max_period) * torch.arange(0, half, dtype=torch.float32, device=timesteps.device) / half
-    )
-    args = timesteps.float()[:, None] * freqs[None]
-    emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-    if dim % 2:
-        emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
-    return emb
+    AudioLDM2Pipeline = None
 
 
 class AudioLDMUNetWrapper(nn.Module):
     def __init__(
         self,
-        latent_channels: int = 8,
-        base_channels: int = 128,
-        prefer_audioldm_unet: bool = False,
+        *,
+        model_id: str,
+        device: torch.device | str,
+        dtype: torch.dtype,
+        cache_pipeline: bool = True,
         audioldm_unet_kwargs: dict | None = None,
     ) -> None:
         super().__init__()
-        self.latent_channels = int(latent_channels)
-        self.using_audioldm_unet = False
-        self.audioldm_unet_available = AudioLDMUNetModel is not None
-        self._input_block_channels: list[int] | None = None
-        self._middle_block_channel: int | None = None
+        if audioldm_unet_kwargs is not None:
+            raise ValueError(
+                "model.audioldm_unet_kwargs is deprecated. "
+                "This repo now loads the pretrained U-Net directly from AudioLDM2Pipeline."
+            )
+        if AudioLDM2Pipeline is None:
+            raise ImportError(
+                "diffusers is required to load the pretrained AudioLDM2 U-Net."
+            )
 
-        unet_kwargs = dict(audioldm_unet_kwargs or {})
-        if prefer_audioldm_unet and self.audioldm_unet_available:
-            unet_kwargs.setdefault("image_size", 16)
-            unet_kwargs.setdefault("in_channels", self.latent_channels)
-            unet_kwargs.setdefault("model_channels", int(base_channels))
-            unet_kwargs.setdefault("out_channels", self.latent_channels)
-            unet_kwargs.setdefault("num_res_blocks", 2)
-            unet_kwargs.setdefault("attention_resolutions", (2, 4, 8))
-            unet_kwargs.setdefault("channel_mult", (1, 2, 4, 8))
-            unet_kwargs.setdefault("dropout", 0.0)
-            unet_kwargs.setdefault("num_head_channels", 32)
-            unet_kwargs.setdefault("use_scale_shift_norm", True)
-            unet_kwargs.setdefault("extra_film_condition_dim", None)
-            try:
-                self.backbone = AudioLDMUNetModel(**unet_kwargs)
-                self.using_audioldm_unet = True
-                self._build_control_specs()
-                return
-            except Exception as exc:
-                warnings.warn(
-                    f"AudioLDM UNet init failed ({type(exc).__name__}: {exc}). Falling back to local UNet.",
-                    RuntimeWarning,
-                )
+        self.device = torch.device(device)
+        self.dtype = dtype
+        self.model_id = str(model_id)
 
-        self.model_channels = int(unet_kwargs.get("model_channels", base_channels))
-        self.time_embed_dim = self.model_channels * 4
-        self.time_embed = nn.Sequential(
-            nn.Linear(self.model_channels, self.time_embed_dim),
-            nn.SiLU(),
-            nn.Linear(self.time_embed_dim, self.time_embed_dim),
-        )
-        self.in_conv = nn.Conv2d(self.latent_channels, self.model_channels, kernel_size=3, padding=1)
-        self.norm1 = nn.GroupNorm(8, self.model_channels)
-        self.norm2 = nn.GroupNorm(8, self.model_channels)
-        self.emb_to_scale_shift_1 = nn.Linear(self.time_embed_dim, 2 * self.model_channels)
-        self.emb_to_scale_shift_2 = nn.Linear(self.time_embed_dim, 2 * self.model_channels)
-        self.mid1 = nn.Conv2d(self.model_channels, self.model_channels, kernel_size=3, padding=1)
-        self.mid2 = nn.Conv2d(self.model_channels, self.model_channels, kernel_size=3, padding=1)
-        self.dropout = nn.Dropout(float(unet_kwargs.get("dropout", 0.0)))
-        self.out_conv = nn.Conv2d(self.model_channels, self.latent_channels, kernel_size=3, padding=1)
-        self._input_block_channels = [self.model_channels]
-        self._middle_block_channel = self.model_channels
+        pipe = AudioLDM2Pipeline.from_pretrained(self.model_id, torch_dtype=dtype)
+        if not hasattr(pipe, "unet") or pipe.unet is None:
+            raise RuntimeError(
+                f"AudioLDM2Pipeline({self.model_id!r}) did not expose a pretrained U-Net."
+            )
+
+        self.backbone = pipe.unet.to(device=self.device, dtype=self.dtype)
+        self.backbone.eval()
+        self.pipeline = pipe if cache_pipeline else None
+        if not cache_pipeline:
+            del pipe
+
+        self.config = getattr(self.backbone, "config", None)
+        if self.config is None:
+            raise RuntimeError("Loaded pretrained U-Net is missing a config object.")
+
+        self._input_block_channels = self._infer_residual_channels()
+        self._middle_block_channel = self._infer_mid_block_channel()
 
     @property
     def backend_name(self) -> str:
-        return "audioldm_unet" if self.using_audioldm_unet else "fallback_unet"
+        return "diffusers_pretrained_unet"
 
     def get_model_channels(self) -> int:
-        if self.using_audioldm_unet:
-            return int(self.backbone.model_channels)
-        return int(self.model_channels)
+        block_out_channels = getattr(self.config, "block_out_channels", None)
+        if not block_out_channels:
+            raise RuntimeError("Pretrained U-Net config is missing block_out_channels.")
+        return int(block_out_channels[0])
 
-    def get_time_embed(self) -> nn.Module:
-        return self.backbone.time_embed if self.using_audioldm_unet else self.time_embed
+    def get_time_proj(self) -> nn.Module:
+        return self.backbone.time_proj
 
-    def get_control_input_blocks(self) -> nn.ModuleList:
-        if not self.using_audioldm_unet:
-            raise RuntimeError("Paper-aligned ControlNet requires the AudioLDM UNet backend.")
-        return self.backbone.input_blocks
+    def get_time_embedding(self) -> nn.Module:
+        return self.backbone.time_embedding
 
-    def get_control_middle_block(self) -> nn.Module:
-        if not self.using_audioldm_unet:
-            raise RuntimeError("Paper-aligned ControlNet requires the AudioLDM UNet backend.")
-        return self.backbone.middle_block
-
-    def _build_control_specs(self) -> None:
-        if not self.using_audioldm_unet:
-            return
-        self._input_block_channels = []
-        for block in self.backbone.input_blocks:
-            block_channels = None
-            for module in reversed(list(block)):
-                if hasattr(module, "out_channels"):
-                    block_channels = int(module.out_channels)
-                    break
-            if block_channels is None:
-                raise RuntimeError("Could not infer input block output channels for ControlNet copy.")
-            self._input_block_channels.append(block_channels)
-        middle_channels = getattr(self.backbone.middle_block[-1], "out_channels", None)
-        if middle_channels is None:
-            for module in reversed(list(self.backbone.middle_block)):
-                if hasattr(module, "out_channels"):
-                    middle_channels = int(module.out_channels)
-                    break
-        if middle_channels is None:
-            raise RuntimeError("Could not infer middle block output channels for ControlNet copy.")
-        self._middle_block_channel = int(middle_channels)
+    def get_control_modules(self) -> dict[str, nn.Module]:
+        return {
+            "conv_in": self.backbone.conv_in,
+            "down_blocks": self.backbone.down_blocks,
+            "mid_block": self.backbone.mid_block,
+        }
 
     @property
     def control_specs(self) -> dict[str, object]:
         return {
-            "input_block_channels": list(self._input_block_channels or []),
-            "middle_block_channel": int(self._middle_block_channel or 0),
+            "input_block_channels": list(self._input_block_channels),
+            "middle_block_channel": int(self._middle_block_channel),
         }
 
     @staticmethod
-    def _apply_scale_shift(h: torch.Tensor, scale_shift: torch.Tensor) -> torch.Tensor:
-        scale, shift = torch.chunk(scale_shift, chunks=2, dim=1)
-        return h * (1.0 + scale[:, :, None, None]) + shift[:, :, None, None]
+    def _flatten_values(value) -> list[object]:
+        if isinstance(value, (list, tuple)):
+            out = []
+            for item in value:
+                out.extend(AudioLDMUNetWrapper._flatten_values(item))
+            return out
+        return [value]
+
+    def get_cross_attention_dims(self) -> tuple[int, int | None]:
+        candidates = []
+        field_value = getattr(self.config, "cross_attention_dim", None)
+        candidates.extend(self._flatten_values(field_value))
+        dims = [int(candidate) for candidate in candidates if candidate is not None]
+        unique_dims = []
+        for dim in dims:
+            if dim not in unique_dims:
+                unique_dims.append(dim)
+        if len(unique_dims) >= 2:
+            return unique_dims[0], unique_dims[1]
+        if len(unique_dims) == 1:
+            return unique_dims[0], None
+
+        discovered = []
+        for block in self.backbone.down_blocks:
+            attentions = getattr(block, "attentions", None)
+            if attentions is None:
+                continue
+            for attention in attentions:
+                transformer_blocks = getattr(attention, "transformer_blocks", None)
+                if transformer_blocks is None:
+                    continue
+                for transformer in transformer_blocks:
+                    attn2 = getattr(transformer, "attn2", None)
+                    to_k = getattr(attn2, "to_k", None)
+                    in_features = getattr(to_k, "in_features", None)
+                    if in_features is not None and int(in_features) not in discovered:
+                        discovered.append(int(in_features))
+        if len(discovered) >= 2:
+            return discovered[0], discovered[1]
+        if len(discovered) == 1:
+            return discovered[0], None
+        raise RuntimeError(
+            "Could not infer valid cross-attention dimensions from the pretrained U-Net config or modules."
+        )
+
+    def prepare_encoder_hidden_states(
+        self,
+        batch_size: int,
+        *,
+        encoder_hidden_states: torch.Tensor | None,
+        encoder_hidden_states_1: torch.Tensor | None,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> dict[str, torch.Tensor | None]:
+        primary_dim, secondary_dim = self.get_cross_attention_dims()
+        if encoder_hidden_states is None:
+            encoder_hidden_states = torch.zeros(
+                batch_size,
+                1,
+                primary_dim,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            encoder_hidden_states = encoder_hidden_states.to(device=device, dtype=dtype)
+
+        if secondary_dim is None:
+            encoder_hidden_states_1 = None
+        elif encoder_hidden_states_1 is None:
+            encoder_hidden_states_1 = torch.zeros(
+                batch_size,
+                1,
+                secondary_dim,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            encoder_hidden_states_1 = encoder_hidden_states_1.to(device=device, dtype=dtype)
+
+        return {
+            "encoder_hidden_states": encoder_hidden_states,
+            "encoder_hidden_states_1": encoder_hidden_states_1,
+        }
+
+    def _infer_residual_channels(self) -> list[int]:
+        channels = [int(self.backbone.conv_in.out_channels)]
+        for block in self.backbone.down_blocks:
+            if hasattr(block, "resnets"):
+                for resnet in block.resnets:
+                    out_channels = getattr(resnet, "out_channels", None)
+                    if out_channels is None and hasattr(resnet, "conv2"):
+                        out_channels = getattr(resnet.conv2, "out_channels", None)
+                    if out_channels is None:
+                        raise RuntimeError(
+                            "Could not infer residual channel count from pretrained down block."
+                        )
+                    channels.append(int(out_channels))
+            if hasattr(block, "downsamplers") and block.downsamplers is not None:
+                for downsampler in block.downsamplers:
+                    out_channels = getattr(downsampler, "out_channels", None)
+                    if out_channels is None and hasattr(downsampler, "conv"):
+                        out_channels = getattr(downsampler.conv, "out_channels", None)
+                    if out_channels is None:
+                        raise RuntimeError(
+                            "Could not infer downsampler channel count from pretrained U-Net."
+                        )
+                    channels.append(int(out_channels))
+        return channels
+
+    def _infer_mid_block_channel(self) -> int:
+        out_channels = None
+        if hasattr(self.backbone.mid_block, "resnets") and len(self.backbone.mid_block.resnets) > 0:
+            resnet = self.backbone.mid_block.resnets[-1]
+            out_channels = getattr(resnet, "out_channels", None)
+            if out_channels is None and hasattr(resnet, "conv2"):
+                out_channels = getattr(resnet.conv2, "out_channels", None)
+        if out_channels is None:
+            raise RuntimeError("Could not infer middle block channel count from pretrained U-Net.")
+        return int(out_channels)
 
     def _get_unet_spatial_factor(self) -> int:
-        if not self.using_audioldm_unet:
-            return 1
-        channel_mult = getattr(self.backbone, "channel_mult", None)
-        if isinstance(channel_mult, (list, tuple)) and len(channel_mult) > 0:
-            return 2 ** (len(channel_mult) - 1)
-        return 8
+        num_upsamplers = getattr(self.backbone, "num_upsamplers", None)
+        if num_upsamplers is not None:
+            return 2 ** int(num_upsamplers)
+        block_out_channels = getattr(self.config, "block_out_channels", ())
+        return 2 ** max(0, len(block_out_channels) - 1)
 
     @staticmethod
     def _pad_for_unet(x: torch.Tensor, factor: int) -> tuple[torch.Tensor, tuple[int, int]]:
@@ -170,82 +228,151 @@ class AudioLDMUNetWrapper(nn.Module):
         h, w = hw
         return x[..., :h, :w]
 
-    def _fallback_forward(
+    def _forward_with_control(
         self,
-        x: torch.Tensor,
+        sample: torch.Tensor,
         timesteps: torch.Tensor,
-        control_residuals: dict[str, object] | None = None,
-        control_scale: float = 1.0,
+        encoder_hidden_states: torch.Tensor,
+        encoder_hidden_states_1: torch.Tensor | None,
+        control_residuals: dict[str, object] | None,
     ) -> torch.Tensor:
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        h = self.in_conv(x).to(dtype=x.dtype)
+        attention_mask = None
+        encoder_attention_mask = None
+        encoder_attention_mask_1 = None
+        cross_attention_kwargs = None
+        timestep_cond = None
+        class_labels = None
+        return_dict = True
+
+        default_overall_up_factor = 2 ** self.backbone.num_upsamplers
+        forward_upsample_size = any(s % default_overall_up_factor != 0 for s in sample.shape[-2:])
+        upsample_size = None
+
+        timesteps = timesteps
+        if not torch.is_tensor(timesteps):
+            dtype = torch.float64 if isinstance(timesteps, float) else torch.int64
+            timesteps = torch.tensor([timesteps], dtype=dtype, device=sample.device)
+        elif len(timesteps.shape) == 0:
+            timesteps = timesteps[None].to(sample.device)
+        timesteps = timesteps.expand(sample.shape[0])
+
+        t_emb = self.backbone.time_proj(timesteps)
+        t_emb = t_emb.to(dtype=sample.dtype)
+        emb = self.backbone.time_embedding(t_emb, timestep_cond)
+
+        if self.backbone.class_embedding is not None:
+            if class_labels is None:
+                raise ValueError("class_labels should be provided when num_class_embeds > 0")
+
+        sample = self.backbone.conv_in(sample)
+
+        down_block_res_samples = (sample,)
+        for downsample_block in self.backbone.down_blocks:
+            if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
+                sample, res_samples = downsample_block(
+                    hidden_states=sample,
+                    temb=emb,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                    encoder_attention_mask=encoder_attention_mask,
+                    encoder_hidden_states_1=encoder_hidden_states_1,
+                    encoder_attention_mask_1=encoder_attention_mask_1,
+                )
+            else:
+                sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
+            down_block_res_samples += res_samples
+
         if control_residuals is not None:
-            down = control_residuals.get("down_block_residuals", None)
-            if isinstance(down, (list, tuple)) and len(down) > 0 and down[0] is not None:
-                res = down[0].to(dtype=h.dtype)
-                if res.shape[-2:] != h.shape[-2:]:
-                    res = torch.nn.functional.interpolate(res, size=h.shape[-2:], mode="bilinear", align_corners=False)
-                h = h + float(control_scale) * res
-        h = self.norm1(h)
-        h = self._apply_scale_shift(h, self.emb_to_scale_shift_1(emb))
-        h = torch.nn.functional.silu(h)
-        h = self.mid1(h)
-        h = self.norm2(h)
-        h = self._apply_scale_shift(h, self.emb_to_scale_shift_2(emb))
-        h = torch.nn.functional.silu(h)
-        h = self.dropout(h)
-        h = self.mid2(h)
+            extra_down = control_residuals.get("down_block_residuals", None)
+            if extra_down is not None:
+                if len(extra_down) != len(down_block_res_samples):
+                    raise RuntimeError(
+                        f"Control residual count mismatch: got {len(extra_down)} residuals for "
+                        f"{len(down_block_res_samples)} U-Net skip states."
+                    )
+                down_block_res_samples = tuple(
+                    base
+                    + (
+                        residual.to(device=base.device, dtype=base.dtype)
+                        if residual.shape[-2:] == base.shape[-2:]
+                        else torch.nn.functional.interpolate(
+                            residual.to(device=base.device, dtype=base.dtype),
+                            size=base.shape[-2:],
+                            mode="bilinear",
+                            align_corners=False,
+                        )
+                    )
+                    for base, residual in zip(down_block_res_samples, extra_down)
+                )
+
+        if self.backbone.mid_block is not None:
+            sample = self.backbone.mid_block(
+                sample,
+                emb,
+                encoder_hidden_states=encoder_hidden_states,
+                attention_mask=attention_mask,
+                cross_attention_kwargs=cross_attention_kwargs,
+                encoder_attention_mask=encoder_attention_mask,
+                encoder_hidden_states_1=encoder_hidden_states_1,
+                encoder_attention_mask_1=encoder_attention_mask_1,
+            )
         if control_residuals is not None:
             mid = control_residuals.get("mid_block_residual", None)
             if mid is not None:
-                res = mid.to(dtype=h.dtype)
-                if res.shape[-2:] != h.shape[-2:]:
-                    res = torch.nn.functional.interpolate(res, size=h.shape[-2:], mode="bilinear", align_corners=False)
-                h = h + float(control_scale) * res
-        return self.out_conv(h)
+                mid = mid.to(device=sample.device, dtype=sample.dtype)
+                if mid.shape[-2:] != sample.shape[-2:]:
+                    mid = torch.nn.functional.interpolate(
+                        mid,
+                        size=sample.shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                sample = sample + mid
 
-    def _audioldm_forward_with_control(
-        self,
-        x: torch.Tensor,
-        timesteps: torch.Tensor,
-        context_list: list[torch.Tensor | None],
-        context_attn_mask_list: list[torch.Tensor | None],
-        control_residuals: dict[str, object] | None = None,
-        control_scale: float = 1.0,
-    ) -> torch.Tensor:
-        down = None if control_residuals is None else control_residuals.get("down_block_residuals", None)
-        mid = None if control_residuals is None else control_residuals.get("mid_block_residual", None)
-        hs = []
-        emb = self.backbone.time_embed(timestep_embedding(timesteps, self.backbone.model_channels))
-        h = x.type(self.backbone.dtype)
-        for i, module in enumerate(self.backbone.input_blocks):
-            h = module(h, emb, context_list, context_attn_mask_list)
-            if down is not None and i < len(down) and down[i] is not None:
-                res = down[i].to(dtype=h.dtype)
-                if res.shape[-2:] != h.shape[-2:]:
-                    res = torch.nn.functional.interpolate(res, size=h.shape[-2:], mode="bilinear", align_corners=False)
-                h = h + float(control_scale) * res
-            hs.append(h)
-        h = self.backbone.middle_block(h, emb, context_list, context_attn_mask_list)
-        if mid is not None:
-            res = mid.to(dtype=h.dtype)
-            if res.shape[-2:] != h.shape[-2:]:
-                res = torch.nn.functional.interpolate(res, size=h.shape[-2:], mode="bilinear", align_corners=False)
-            h = h + float(control_scale) * res
-        for module in self.backbone.output_blocks:
-            h = torch.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, context_list, context_attn_mask_list)
-        h = h.type(x.dtype)
-        if self.backbone.predict_codebook_ids:
-            return self.backbone.id_predictor(h)
-        return self.backbone.out(h)
+        for i, upsample_block in enumerate(self.backbone.up_blocks):
+            is_final_block = i == len(self.backbone.up_blocks) - 1
+            res_samples = down_block_res_samples[-len(upsample_block.resnets):]
+            down_block_res_samples = down_block_res_samples[: -len(upsample_block.resnets)]
+            if not is_final_block and forward_upsample_size:
+                upsample_size = down_block_res_samples[-1].shape[2:]
+
+            if hasattr(upsample_block, "has_cross_attention") and upsample_block.has_cross_attention:
+                sample = upsample_block(
+                    hidden_states=sample,
+                    temb=emb,
+                    res_hidden_states_tuple=res_samples,
+                    encoder_hidden_states=encoder_hidden_states,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                    upsample_size=upsample_size,
+                    attention_mask=attention_mask,
+                    encoder_attention_mask=encoder_attention_mask,
+                    encoder_hidden_states_1=encoder_hidden_states_1,
+                    encoder_attention_mask_1=encoder_attention_mask_1,
+                )
+            else:
+                sample = upsample_block(
+                    hidden_states=sample,
+                    temb=emb,
+                    res_hidden_states_tuple=res_samples,
+                    upsample_size=upsample_size,
+                )
+
+        if self.backbone.conv_norm_out:
+            sample = self.backbone.conv_norm_out(sample)
+            sample = self.backbone.conv_act(sample)
+        sample = self.backbone.conv_out(sample)
+
+        if return_dict:
+            return sample
+        return sample
 
     def forward(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor | None = None,
-        context_list=None,
-        context_attn_mask_list=None,
+        encoder_hidden_states: torch.Tensor | None = None,
+        encoder_hidden_states_1: torch.Tensor | None = None,
         control_residuals: dict[str, object] | None = None,
         control_scale: float = 1.0,
         **kwargs,
@@ -253,25 +380,55 @@ class AudioLDMUNetWrapper(nn.Module):
         del kwargs
         if timesteps is None:
             raise ValueError("timesteps is required")
-        if self.using_audioldm_unet:
-            if context_list is None:
-                context_list = []
-            if context_attn_mask_list is None:
-                context_attn_mask_list = [None] * len(context_list)
-            spatial_factor = self._get_unet_spatial_factor()
-            x_in, orig_hw = self._pad_for_unet(x, factor=spatial_factor)
-            eps = self._audioldm_forward_with_control(
-                x=x_in,
-                timesteps=timesteps,
-                context_list=context_list,
-                context_attn_mask_list=context_attn_mask_list,
-                control_residuals=control_residuals,
-                control_scale=control_scale,
-            )
-            return self._crop_to_hw(eps, orig_hw)
-        return self._fallback_forward(
-            x=x,
-            timesteps=timesteps,
-            control_residuals=control_residuals,
-            control_scale=control_scale,
+
+        spatial_factor = self._get_unet_spatial_factor()
+        x_in, orig_hw = self._pad_for_unet(x, factor=spatial_factor)
+        x_in = x_in.to(device=self.device, dtype=self.dtype)
+        timesteps = timesteps.to(device=self.device)
+        encoder_state_dict = self.prepare_encoder_hidden_states(
+            batch_size=x_in.shape[0],
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_hidden_states_1=encoder_hidden_states_1,
+            device=self.device,
+            dtype=self.dtype,
         )
+
+        down_block_additional_residuals = None
+        mid_block_additional_residual = None
+        if control_residuals is not None:
+            down = control_residuals.get("down_block_residuals", None)
+            if down is not None:
+                down_block_additional_residuals = tuple(
+                    float(control_scale) * residual.to(device=self.device, dtype=self.dtype)
+                    for residual in down
+                )
+            mid = control_residuals.get("mid_block_residual", None)
+            if mid is not None:
+                mid_block_additional_residual = (
+                    float(control_scale) * mid.to(device=self.device, dtype=self.dtype)
+                )
+
+        merged_control = None
+        if down_block_additional_residuals is not None or mid_block_additional_residual is not None:
+            merged_control = {
+                "down_block_residuals": down_block_additional_residuals,
+                "mid_block_residual": mid_block_additional_residual,
+            }
+        if merged_control is None:
+            out = self.backbone(
+                sample=x_in,
+                timestep=timesteps,
+                encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
+                encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
+            )
+            sample = out.sample if hasattr(out, "sample") else out
+        else:
+            sample = self._forward_with_control(
+                sample=x_in,
+                timesteps=timesteps,
+                encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
+                encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
+                control_residuals=merged_control,
+            )
+        sample = sample.to(dtype=x.dtype)
+        return self._crop_to_hw(sample, orig_hw)
