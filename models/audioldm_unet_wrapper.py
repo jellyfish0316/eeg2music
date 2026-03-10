@@ -240,6 +240,69 @@ class AudioLDMUNetWrapper(nn.Module):
             return self.backbone.id_predictor(h)
         return self.backbone.out(h)
 
+    def _audioldm_forward_with_control(
+        self,
+        x: torch.Tensor,
+        timesteps: torch.Tensor,
+        y: torch.Tensor,
+        context_list: list[torch.Tensor | None],
+        context_attn_mask_list: list[torch.Tensor | None],
+        control_residuals: dict[str, object] | None = None,
+        control_scale: float = 1.0,
+    ) -> torch.Tensor:
+        down_block_residuals = None
+        mid_block_residual = None
+        if control_residuals is not None:
+            down_block_residuals = control_residuals.get("down_block_residuals", None)
+            mid_block_residual = control_residuals.get("mid_block_residual", None)
+
+        hs = []
+        t_emb = timestep_embedding(timesteps, self.backbone.model_channels)
+        emb = self.backbone.time_embed(t_emb)
+        if self.backbone.use_extra_film_by_concat:
+            emb = torch.cat([emb, self.backbone.film_emb(y)], dim=-1)
+
+        h = x.type(self.backbone.dtype)
+        for i, module in enumerate(self.backbone.input_blocks):
+            h = module(h, emb, context_list, context_attn_mask_list)
+            if (
+                down_block_residuals is not None
+                and i < len(down_block_residuals)
+                and down_block_residuals[i] is not None
+            ):
+                residual = down_block_residuals[i].to(dtype=h.dtype)
+                if residual.shape[-2:] != h.shape[-2:]:
+                    residual = torch.nn.functional.interpolate(
+                        residual,
+                        size=h.shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                h = h + float(control_scale) * residual
+            hs.append(h)
+
+        h = self.backbone.middle_block(h, emb, context_list, context_attn_mask_list)
+        if mid_block_residual is not None:
+            residual = mid_block_residual.to(dtype=h.dtype)
+            if residual.shape[-2:] != h.shape[-2:]:
+                residual = torch.nn.functional.interpolate(
+                    residual,
+                    size=h.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            h = h + float(control_scale) * residual
+
+        for module in self.backbone.output_blocks:
+            concate_tensor = hs.pop()
+            h = torch.cat([h, concate_tensor], dim=1)
+            h = module(h, emb, context_list, context_attn_mask_list)
+
+        h = h.type(x.dtype)
+        if self.backbone.predict_codebook_ids:
+            return self.backbone.id_predictor(h)
+        return self.backbone.out(h)
+
     def forward(
         self,
         x: torch.Tensor,

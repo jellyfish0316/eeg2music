@@ -101,6 +101,33 @@ class EEGControlNetModel(nn.Module):
             prefer_audioldm_unet=prefer_audioldm_unet,
             audioldm_unet_kwargs=audioldm_unet_kwargs,
         )
+        self.controlnet_enabled = controlnet_enabled
+        self.default_control_scale = float(controlnet_scale)
+
+        self.eeg_hint_encoder: EEGHintEncoder | None = None
+        self.control_branch: AudioLDMControlBranch | None = None
+        if self.controlnet_enabled:
+            specs = self.control_unet.control_specs
+            input_block_channels = specs["input_block_channels"]
+            input_block_ds = specs["input_block_ds"]
+            middle_block_channel = specs["middle_block_channel"]
+            middle_block_ds = specs["middle_block_ds"]
+
+            self.eeg_hint_encoder = EEGHintEncoder(
+                in_channels=eeg_channels,
+                hint_channels=controlnet_hint_channels,
+            )
+            self.control_branch = AudioLDMControlBranch(
+                latent_channels=self.latent_channels,
+                hint_channels=controlnet_hint_channels,
+                eeg_global_dim=eeg_global_dim,
+                input_block_channels=input_block_channels,
+                input_block_ds=input_block_ds,
+                middle_block_channel=middle_block_channel,
+                middle_block_ds=middle_block_ds,
+                hidden_channels=max(64, controlnet_hint_channels),
+                zero_init=controlnet_zero_init,
+            )
 
         self.controlnet_enabled = bool(controlnet_enabled)
         self.default_control_scale = float(controlnet_scale)
