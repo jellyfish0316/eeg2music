@@ -4,35 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .subject_adapter import SubjectAdapter
-from .eeg_projector import EEGProjector
+from .eeg_global_encoder import EEGGlobalEncoder
 from .audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
-
-
-class SimpleUNet(nn.Module):
-    def __init__(self, channels: int = 8):
-        super().__init__()
-        self.enc1 = nn.Conv2d(channels, 64, 3, padding=1)
-        self.enc2 = nn.Conv2d(64, 128, 3, stride=2, padding=1)
-        self.mid = nn.Conv2d(128, 128, 3, padding=1)
-        self.dec1 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)
-        self.out = nn.Conv2d(64, channels, 3, padding=1)
-
-    def forward(self, x):
-        h1 = F.silu(self.enc1(x))
-        h2 = F.silu(self.enc2(h1))
-        hm = F.silu(self.mid(h2))
-        hd = F.silu(self.dec1(hm))
-
-        if hd.shape[-2:] != h1.shape[-2:]:
-            hd = F.interpolate(
-                hd,
-                size=h1.shape[-2:],
-                mode="bilinear",
-                align_corners=False,
-            )
-
-        out = self.out(hd + h1)
-        return out
+from .audioldm_unet_wrapper import AudioLDMUNetWrapper
 
 
 class EEGControlNetModel(nn.Module):
@@ -47,9 +21,15 @@ class EEGControlNetModel(nn.Module):
         audio_sample_rate: int = 16000,
         audio_freeze_vae: bool = True,
         audio_use_mode: bool = False,
+        enable_audio_encoder: bool = True,
         latent_channels: int | None = None,
-        latent_h: int = 32,
-        latent_w: int = 32,
+        eeg_global_dim: int = 512,
+        diffusion_num_steps: int = 1000,
+        diffusion_beta_start: float = 1e-4,
+        diffusion_beta_end: float = 2e-2,
+        unet_base_channels: int = 128,
+        prefer_audioldm_unet: bool = False,
+        audioldm_unet_kwargs: dict | None = None,
     ):
         super().__init__()
 
@@ -66,16 +46,18 @@ class EEGControlNetModel(nn.Module):
                 emb_dim=subject_emb_dim,
             )
 
-        self.audio_encoder = AudioLDM2MusicEncoderWrapper(
-            model_id=audio_model_id,
-            sample_rate=audio_sample_rate,
-            device=str(device),
-            dtype=torch.float16 if device.type == "cuda" else torch.float32,
-            freeze_vae=audio_freeze_vae,
-            use_mode=audio_use_mode,
-        )
-
-        inferred_latent_channels = getattr(self.audio_encoder.vae.config, "latent_channels", None)
+        self.audio_encoder: AudioLDM2MusicEncoderWrapper | None = None
+        inferred_latent_channels = None
+        if enable_audio_encoder:
+            self.audio_encoder = AudioLDM2MusicEncoderWrapper(
+                model_id=audio_model_id,
+                sample_rate=audio_sample_rate,
+                device=str(device),
+                dtype=torch.float16 if device.type == "cuda" else torch.float32,
+                freeze_vae=audio_freeze_vae,
+                use_mode=audio_use_mode,
+            )
+            inferred_latent_channels = getattr(self.audio_encoder.vae.config, "latent_channels", None)
         if latent_channels is None:
             if inferred_latent_channels is None:
                 raise ValueError("latent_channels is None and could not be inferred from VAE config.")
@@ -86,28 +68,83 @@ class EEGControlNetModel(nn.Module):
             )
         self.latent_channels = latent_channels
 
-        self.projector = EEGProjector(
+        self.eeg_global_encoder = EEGGlobalEncoder(
             in_channels=eeg_channels,
-            out_channels=self.latent_channels,
-            out_height=latent_h,
-            out_width=latent_w,
+            out_dim=eeg_global_dim,
         )
 
-        self.control_unet = SimpleUNet(channels=self.latent_channels)
+        self.control_unet = AudioLDMUNetWrapper(
+            latent_channels=self.latent_channels,
+            extra_film_condition_dim=eeg_global_dim,
+            base_channels=unet_base_channels,
+            prefer_audioldm_unet=prefer_audioldm_unet,
+            audioldm_unet_kwargs=audioldm_unet_kwargs,
+        )
 
-    def q_sample(self, z0: torch.Tensor, noise: torch.Tensor, alpha: float = 0.8) -> torch.Tensor:
-        return (alpha ** 0.5) * z0 + ((1.0 - alpha) ** 0.5) * noise
+        self.num_train_timesteps = int(diffusion_num_steps)
+        betas = torch.linspace(
+            diffusion_beta_start,
+            diffusion_beta_end,
+            self.num_train_timesteps,
+            dtype=torch.float32,
+        )
+        alphas = 1.0 - betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+
+        self.register_buffer("betas", betas, persistent=False)
+        self.register_buffer("alphas_cumprod", alphas_cumprod, persistent=False)
+        self.register_buffer(
+            "sqrt_alphas_cumprod",
+            torch.sqrt(alphas_cumprod),
+            persistent=False,
+        )
+        self.register_buffer(
+            "sqrt_one_minus_alphas_cumprod",
+            torch.sqrt(1.0 - alphas_cumprod),
+            persistent=False,
+        )
+
+    def sample_timesteps(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        return torch.randint(
+            low=0,
+            high=self.num_train_timesteps,
+            size=(batch_size,),
+            device=device,
+            dtype=torch.long,
+        )
+
+    def q_sample(
+        self,
+        z0: torch.Tensor,
+        timesteps: torch.Tensor,
+        noise: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if noise is None:
+            noise = torch.randn_like(z0)
+        sqrt_alpha_t = self.sqrt_alphas_cumprod[timesteps][:, None, None, None]
+        sqrt_one_minus_alpha_t = self.sqrt_one_minus_alphas_cumprod[timesteps][:, None, None, None]
+        zt = sqrt_alpha_t * z0 + sqrt_one_minus_alpha_t * noise
+        return zt, noise
 
     def forward(
         self,
         eeg: torch.Tensor,
-        audio: torch.Tensor,
         subject_idx: torch.Tensor,
+        audio: torch.Tensor | None = None,
+        z0: torch.Tensor | None = None,
+        timesteps: torch.Tensor | None = None,
+        noise: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         if self.use_subject_adapter:
             eeg = self.subject_adapter(eeg, subject_idx)
 
-        z0 = self.audio_encoder(audio)              # [B, C, H, W]
+        if z0 is None:
+            if audio is None:
+                raise ValueError("Either z0 or audio must be provided.")
+            if self.audio_encoder is None:
+                raise RuntimeError("audio_encoder is disabled but audio was provided.")
+            z0 = self.audio_encoder(audio)              # [B, C, H, W]
+
         if z0.dim() != 4:
             raise RuntimeError(f"Expected z0 to be 4D [B,C,H,W], got shape {tuple(z0.shape)}")
         if z0.shape[1] != self.latent_channels:
@@ -116,21 +153,23 @@ class EEGControlNetModel(nn.Module):
             )
         z0 = z0.float()
 
-        noise = torch.randn_like(z0)
-        zt = self.q_sample(z0, noise)
-
-        eeg_cond = self.projector(
-            eeg,
-            target_hw=(z0.shape[2], z0.shape[3]),
-        )                                           # [B, C, H, W]
-        if eeg_cond.shape != z0.shape:
-            raise RuntimeError(
-                f"shape mismatch: z0={tuple(z0.shape)}, eeg_cond={tuple(eeg_cond.shape)}"
+        if timesteps is None:
+            timesteps = self.sample_timesteps(
+                batch_size=z0.shape[0],
+                device=z0.device,
             )
-        eeg_cond = eeg_cond.to(dtype=z0.dtype)
+        if timesteps.shape != (z0.shape[0],):
+            raise RuntimeError(f"Expected timesteps shape {(z0.shape[0],)}, got {tuple(timesteps.shape)}")
 
-        # paper 精神：encoder path condition
-        eps_pred = self.control_unet(zt + eeg_cond)
+        zt, noise = self.q_sample(z0, timesteps=timesteps, noise=noise)
+
+        eeg_global = self.eeg_global_encoder(eeg).to(dtype=z0.dtype)  # [B, D]
+
+        eps_pred = self.control_unet(
+            x=zt,
+            timesteps=timesteps,
+            y=eeg_global,
+        )
 
         loss = F.mse_loss(eps_pred, noise)
 
@@ -138,7 +177,8 @@ class EEGControlNetModel(nn.Module):
             "loss": loss,
             "z0": z0,
             "zt": zt,
+            "timesteps": timesteps,
             "noise": noise,
             "eps_pred": eps_pred,
-            "eeg_cond": eeg_cond,
+            "eeg_global": eeg_global,
         }
