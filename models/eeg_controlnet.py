@@ -5,8 +5,10 @@ import torch.nn.functional as F
 
 from .subject_adapter import SubjectAdapter
 from .eeg_global_encoder import EEGGlobalEncoder
+from .eeg_hint_encoder import EEGHintEncoder
 from .audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
 from .audioldm_unet_wrapper import AudioLDMUNetWrapper
+from .audioldm_control_branch import AudioLDMControlBranch
 
 
 class EEGControlNetModel(nn.Module):
@@ -30,6 +32,10 @@ class EEGControlNetModel(nn.Module):
         unet_base_channels: int = 128,
         prefer_audioldm_unet: bool = False,
         audioldm_unet_kwargs: dict | None = None,
+        controlnet_enabled: bool = False,
+        controlnet_hint_channels: int = 64,
+        controlnet_zero_init: bool = True,
+        controlnet_scale: float = 1.0,
     ):
         super().__init__()
 
@@ -80,6 +86,33 @@ class EEGControlNetModel(nn.Module):
             prefer_audioldm_unet=prefer_audioldm_unet,
             audioldm_unet_kwargs=audioldm_unet_kwargs,
         )
+        self.controlnet_enabled = controlnet_enabled
+        self.default_control_scale = float(controlnet_scale)
+
+        self.eeg_hint_encoder: EEGHintEncoder | None = None
+        self.control_branch: AudioLDMControlBranch | None = None
+        if self.controlnet_enabled:
+            specs = self.control_unet.control_specs
+            input_block_channels = specs["input_block_channels"]
+            input_block_ds = specs["input_block_ds"]
+            middle_block_channel = specs["middle_block_channel"]
+            middle_block_ds = specs["middle_block_ds"]
+
+            self.eeg_hint_encoder = EEGHintEncoder(
+                in_channels=eeg_channels,
+                hint_channels=controlnet_hint_channels,
+            )
+            self.control_branch = AudioLDMControlBranch(
+                latent_channels=self.latent_channels,
+                hint_channels=controlnet_hint_channels,
+                eeg_global_dim=eeg_global_dim,
+                input_block_channels=input_block_channels,
+                input_block_ds=input_block_ds,
+                middle_block_channel=middle_block_channel,
+                middle_block_ds=middle_block_ds,
+                hidden_channels=max(64, controlnet_hint_channels),
+                zero_init=controlnet_zero_init,
+            )
 
         self.num_train_timesteps = int(diffusion_num_steps)
         betas = torch.linspace(
@@ -134,6 +167,8 @@ class EEGControlNetModel(nn.Module):
         z0: torch.Tensor | None = None,
         timesteps: torch.Tensor | None = None,
         noise: torch.Tensor | None = None,
+        control_scale: float | None = None,
+        use_control: bool = True,
     ) -> dict[str, torch.Tensor]:
         if self.use_subject_adapter:
             eeg = self.subject_adapter(eeg, subject_idx)
@@ -164,11 +199,29 @@ class EEGControlNetModel(nn.Module):
         zt, noise = self.q_sample(z0, timesteps=timesteps, noise=noise)
 
         eeg_global = self.eeg_global_encoder(eeg).to(dtype=z0.dtype)  # [B, D]
+        use_control = bool(use_control and self.controlnet_enabled)
+        control_residuals = None
+        eeg_hint = None
+        if use_control:
+            if self.eeg_hint_encoder is None or self.control_branch is None:
+                raise RuntimeError("controlnet_enabled=True but control modules are not initialized.")
+            eeg_hint = self.eeg_hint_encoder(
+                eeg,
+                target_hw=(z0.shape[2], z0.shape[3]),
+            ).to(dtype=z0.dtype)
+            control_residuals = self.control_branch(
+                zt=zt,
+                hint=eeg_hint,
+                timesteps=timesteps,
+                y=eeg_global,
+            )
 
         eps_pred = self.control_unet(
             x=zt,
             timesteps=timesteps,
             y=eeg_global,
+            control_residuals=control_residuals,
+            control_scale=self.default_control_scale if control_scale is None else float(control_scale),
         )
 
         loss = F.mse_loss(eps_pred, noise)
@@ -181,4 +234,6 @@ class EEGControlNetModel(nn.Module):
             "noise": noise,
             "eps_pred": eps_pred,
             "eeg_global": eeg_global,
+            "eeg_hint": eeg_hint,
+            "use_control": torch.tensor(use_control, device=z0.device),
         }

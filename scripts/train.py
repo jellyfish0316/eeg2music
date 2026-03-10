@@ -15,6 +15,43 @@ def load_config(path: str):
         return yaml.safe_load(f)
 
 
+def _set_trainable(module: torch.nn.Module | None, enabled: bool) -> int:
+    if module is None:
+        return 0
+    count = 0
+    for p in module.parameters():
+        p.requires_grad = enabled
+        count += p.numel()
+    return count
+
+
+def apply_freeze_policy(model: EEGControlNetModel, control_cfg: dict) -> dict[str, int]:
+    # default: train all
+    if not bool(control_cfg.get("enabled", False)):
+        return {"total_trainable": sum(p.numel() for p in model.parameters() if p.requires_grad)}
+
+    if not bool(control_cfg.get("freeze_base_unet", True)):
+        return {"total_trainable": sum(p.numel() for p in model.parameters() if p.requires_grad)}
+
+    # Freeze all first, then unfreeze selected modules.
+    for p in model.parameters():
+        p.requires_grad = False
+
+    trainable_modules = list(
+        control_cfg.get(
+            "trainable_modules",
+            ["eeg_global_encoder", "eeg_hint_encoder", "control_branch"],
+        )
+    )
+    stats: dict[str, int] = {}
+    for name in trainable_modules:
+        module = getattr(model, name, None)
+        stats[name] = _set_trainable(module, True)
+
+    stats["total_trainable"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return stats
+
+
 def main():
     cfg = load_config("configs/train.yaml")
     set_seed(cfg["seed"])
@@ -55,6 +92,7 @@ def main():
 
     audio_cfg = cfg.get("audio_encoder", {})
     model_cfg = cfg["model"]
+    control_cfg = cfg.get("controlnet", {})
     unet_kwargs = model_cfg.get("audioldm_unet_kwargs")
     if unet_kwargs is None:
         unet_kwargs = cfg.get("audioldm_unet_kwargs", {})
@@ -82,14 +120,32 @@ def main():
         unet_base_channels=model_cfg["unet_base_channels"],
         prefer_audioldm_unet=model_cfg.get("prefer_audioldm_unet", False),
         audioldm_unet_kwargs=unet_kwargs,
+        controlnet_enabled=bool(control_cfg.get("enabled", False)),
+        controlnet_hint_channels=int(control_cfg.get("hint_channels", 64)),
+        controlnet_zero_init=bool(control_cfg.get("zero_init", True)),
+        controlnet_scale=float(control_cfg.get("control_scale", 1.0)),
     ).to(device)
 
+    freeze_stats = apply_freeze_policy(model, control_cfg)
+
     print("model parameters:", sum(p.numel() for p in model.parameters()), flush=True)
+    print("trainable parameters:", freeze_stats["total_trainable"], flush=True)
+    if control_cfg.get("enabled", False):
+        print(
+            "controlnet:",
+            {
+                "enabled": True,
+                "freeze_base_unet": bool(control_cfg.get("freeze_base_unet", True)),
+                "control_scale": float(control_cfg.get("control_scale", 1.0)),
+                "trainable_modules": list(control_cfg.get("trainable_modules", [])),
+            },
+            flush=True,
+        )
     print("unet backend:", model.control_unet.backend_name, flush=True)
     print("latent source:", "precomputed z0" if use_precomputed_latents else "online VAE", flush=True)
 
     optimizer = torch.optim.Adam(
-        model.parameters(),
+        [p for p in model.parameters() if p.requires_grad],
         lr=cfg["train"]["lr"],
     )
 
@@ -122,6 +178,8 @@ def main():
                 audio=batch_audio,
                 z0=batch_z0,
                 timesteps=timesteps,
+                use_control=bool(control_cfg.get("enabled", False)),
+                control_scale=float(control_cfg.get("control_scale", 1.0)),
             )
 
             loss = out["loss"]
@@ -141,6 +199,7 @@ def main():
                     f"loss={loss.item():.6f} step_s={step_dt:.2f} "
                     f"z0={tuple(out['z0'].shape)} "
                     f"eeg_global={tuple(out['eeg_global'].shape)} "
+                    f"use_control={bool(out['use_control'].item())} "
                     f"t=[{out['timesteps'].min().item()},{out['timesteps'].max().item()}]",
                     flush=True,
                 )
