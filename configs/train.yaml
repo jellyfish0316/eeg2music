@@ -45,39 +45,13 @@ data:
 model:
   use_subject_adapter: true
   subject_emb_dim: 64
-  unet_base_channels: 128
-  prefer_audioldm_unet: true
   projector:
     channels: [256, 512, 1024, 2048]
     strides: [5, 2, 2, 2]
     lat_grid: null
     use_linear_fallback: true
-  audioldm_unet_kwargs:
-    image_size: 16
-    in_channels: 8
-    model_channels: 64
-    out_channels: 8
-    num_res_blocks: 2
-    attention_resolutions: [1, 2, 4]
-    dropout: 0.0
-    channel_mult: [1, 2, 4]
-    conv_resample: true
-    dims: 2
-    extra_sa_layer: false
-    extra_film_condition_dim: null
-    use_checkpoint: false
-    use_fp16: false
-    num_heads: 4
-    num_head_channels: -1
-    num_heads_upsample: -1
-    use_scale_shift_norm: false
-    resblock_updown: false
-    use_new_attention_order: false
-    use_spatial_transformer: false
-    transformer_depth: 1
-    context_dim: null
-    n_embed: null
-    legacy: true
+  unet:
+    cache_pipeline: true
 
 audio_encoder:
   model_id: cvssp/audioldm2-music

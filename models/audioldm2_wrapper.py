@@ -3,8 +3,16 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torchaudio
-from diffusers import AudioLDM2Pipeline
+
+try:
+    import torchaudio
+except Exception:
+    torchaudio = None
+
+try:
+    from diffusers import AudioLDM2Pipeline
+except Exception:
+    AudioLDM2Pipeline = None
 
 
 @dataclass
@@ -37,6 +45,10 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
         cache_pipeline: bool = True,
     ) -> None:
         super().__init__()
+        if torchaudio is None:
+            raise ImportError("torchaudio is required to load the AudioLDM2 VAE wrapper.")
+        if AudioLDM2Pipeline is None:
+            raise ImportError("diffusers is required to load the AudioLDM2 VAE wrapper.")
         self.model_id = model_id
         self.sample_rate = sample_rate
         self.device_name = device
