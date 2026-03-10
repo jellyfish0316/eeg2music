@@ -1,1 +1,0 @@
-"""Repo-owned vendored code."""

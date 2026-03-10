@@ -1,6 +1,6 @@
 # EEG AudioLDM2 Reproduction
 
-Paper-aligned EEG-to-audio generation prototype based on `AudioLDM2-music`.
+EEG-conditioned latent diffusion prototype built on pretrained `AudioLDM2-music`.
 
 Target paper:
 
@@ -10,7 +10,7 @@ Current model path:
 
 `EEG -> subject adapter -> 1D Conv projector -> ControlNet encoder copy -> frozen AudioLDM2 U-Net -> latent diffusion`
 
-This repo is set up to follow the paper design more closely than the earlier `global encoder + hint encoder` version. The active training path now uses:
+The active training path now uses:
 
 - subject-aware EEG affine modulation
 - 1D temporal EEG projector
@@ -20,7 +20,7 @@ This repo is set up to follow the paper design more closely than the earlier `gl
 
 ## Overview
 
-This repo aims to reproduce the paper's EEG-conditioned latent diffusion setup without an official author release. The implementation is therefore intentionally conservative: it prefers paper-described behavior over extra engineering tricks, and it makes explicit where the code is an inferred reproduction rather than a line-by-line match to an unavailable original repository.
+This repo aims to reproduce the paper's EEG-conditioned latent diffusion setup without an official author release. The implementation is intentionally explicit about what is already aligned with the paper and what is still approximate.
 
 At a high level, the system:
 
@@ -29,6 +29,17 @@ At a high level, the system:
 3. projects EEG into an AudioLDM2-compatible latent grid
 4. injects ControlNet-style residuals into a frozen AudioLDM2 U-Net encoder
 5. trains against diffusion noise prediction in latent space
+
+What is already true on `main`:
+
+- the denoiser backbone is the pretrained diffusers `AudioLDM2Pipeline.unet`
+- the ControlNet branch is copied from the pretrained U-Net encoder and middle block
+- training and validation run end-to-end with finite losses on the current config
+
+What is still missing:
+
+- the AudioLDM2 text-conditioning path is not yet driven by a real text encoder output
+- the main training path currently feeds placeholder zero hidden states into the U-Net cross-attention inputs
 
 ## Repo Layout
 
@@ -52,11 +63,7 @@ The default config expects:
 - EEG sample rate `125 Hz`
 - audio sample rate `16 kHz`
 
-Default text conditioning is fixed to:
-
-```text
-Pop music
-```
+`data.text_prompt` defaults to `"Pop music"` in the dataset/config layer, but the current training path does not yet encode that prompt through AudioLDM2's text encoders. The pretrained U-Net currently receives placeholder zero hidden states.
 
 Default EEG preprocessing is intentionally minimal:
 
@@ -71,7 +78,7 @@ The active config is [configs/train.yaml](/home/bryan/eeg/configs/train.yaml).
 
 Important fields:
 
-- `data.text_prompt`: constant text prompt, default `"Pop music"`
+- `data.text_prompt`: dataset-level/default prompt string, default `"Pop music"`
 - `data.eeg_preprocessing`: explicit preprocessing policy
 - `model.unet.cache_pipeline`: keep the diffusers pipeline object alive after extracting the pretrained U-Net
 - `model.projector.channels`: default `[256, 512, 1024, 2048]`
@@ -179,11 +186,13 @@ saved: outputs/loso_runs/pairwise_report.json
 
 If `latent_cache.enabled: true`, training uses precomputed AudioLDM2 latents instead of encoding waveform on the fly.
 
-To generate latents:
+To generate latents with the current script:
 
 ```bash
-python scripts/precompute_latents.py --config configs/train.yaml
+python scripts/precompute_latents.py
 ```
+
+Note: `scripts/precompute_latents.py` currently reads `configs/train.yaml` directly and does not yet expose a `--config` CLI flag.
 
 The config default points to:
 
@@ -193,7 +202,7 @@ data/precomputed/song21_audioldm2_latents.pt
 
 ## Implementation Status
 
-What is paper-aligned now:
+What is aligned now:
 
 - pretrained AudioLDM2 latent diffusion backbone loaded from diffusers weights
 - checkpoint-derived latent grid
@@ -205,6 +214,7 @@ What is still approximate:
 
 - `L(y,s)` is implemented as affine modulation, because the paper does not provide a more exact public implementation
 - exact paper code is unavailable, so some internal ControlNet block mapping is inferred from the diffusers AudioLDM2 U-Net block structure
+- text conditioning is not yet driven by the real AudioLDM2 text-encoder outputs
 
 ## Decisions Made Without an Official Repo
 
@@ -231,13 +241,13 @@ Reason: the paper description includes encoder-path residual control and is comp
 - The U-Net no longer uses the earlier repo's extra global EEG FiLM path.
 Reason: the paper-aligned path should be `EEG projector -> ControlNet residual injection`, not `global EEG embedding -> extra U-Net conditioning`.
 
-- The text prompt is fixed to `"Pop music"` by default, and EEG preprocessing is kept minimal.
-Reason: those two details are closer to the paper's stated setup than adding extra handcrafted EEG transforms.
+- The dataset/config default prompt remains `"Pop music"`, and EEG preprocessing is kept minimal.
+Reason: those two details are closer to the paper's stated setup than adding extra handcrafted EEG transforms, even though the runtime text path is not fully wired yet.
 
 - Internal block/channel matching for ControlNet residual injection is inferred from the pretrained diffusers `AudioLDM2Pipeline.unet` structure in [audioldm_unet_wrapper.py](/home/bryan/eeg/models/audioldm_unet_wrapper.py).
 Reason: with no official repo, the pretrained diffusers module graph is the most concrete source of truth for stage alignment.
 
-These choices are meant to keep the repo paper-aligned in spirit and interface, while making each non-verifiable implementation choice explicit.
+These choices are meant to keep the repo close to the paper in architecture and training interface, while making each non-verifiable implementation choice explicit.
 
 ## Citation
 
@@ -255,5 +265,6 @@ If you use this repo, cite the original paper first. A basic BibTeX stub:
 ## Known Practical Notes
 
 - The runtime U-Net is loaded from `diffusers` `AudioLDM2Pipeline`; the vendored AudioLDM subset is no longer the training backbone.
+- The current U-Net text-conditioning tensors are placeholders, not real AudioLDM2 text-encoder outputs.
 - On some systems you may see CUDA or joblib warnings during import or tests; the current smoke tests still pass under those warnings.
 - `model.projector.lat_grid` should usually stay `null` unless you intentionally want to override checkpoint-derived shape.
