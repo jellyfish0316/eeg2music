@@ -55,8 +55,19 @@ audio_encoder:
   freeze_vae: true
   use_mode: false
 
+controlnet:
+  enabled: true
+  control_scale: 1.0
+  freeze_base_unet: true
+  hint_channels: 64
+  zero_init: true
+  trainable_modules:
+    - eeg_global_encoder
+    - eeg_hint_encoder
+    - control_branch
+
 latent_cache:
-  enabled: false
+  enabled: true
   path: data/precomputed/song21_audioldm2_latents.pt
   latent_channels: 8
   precompute_batch_size: 16
