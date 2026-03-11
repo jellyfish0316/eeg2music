@@ -275,6 +275,8 @@ def run_one_condition(
         audio_sample_rate=audio_cfg.get("sample_rate", data_cfg["audio_fs"]),
         audio_freeze_vae=bool(audio_cfg.get("freeze_vae", True)),
         audio_use_mode=bool(audio_cfg.get("use_mode", False)),
+        text_prompt=str(data_cfg.get("text_prompt", "Pop music")),
+        text_cache_path=model_cfg.get("unet", {}).get("text_cache_path"),
         enable_audio_encoder=not use_precomputed_latents,
         latent_channels=latent_channels,
         latent_grid=latent_grid,

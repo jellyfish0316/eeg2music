@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 
@@ -17,6 +19,9 @@ class AudioLDMUNetWrapper(nn.Module):
         device: torch.device | str,
         dtype: torch.dtype,
         cache_pipeline: bool = True,
+        text_prompt: str | None = None,
+        text_max_new_tokens: int | None = None,
+        text_cache_path: str | None = None,
         audioldm_unet_kwargs: dict | None = None,
     ) -> None:
         super().__init__()
@@ -33,6 +38,9 @@ class AudioLDMUNetWrapper(nn.Module):
         self.device = torch.device(device)
         self.dtype = dtype
         self.model_id = str(model_id)
+        self.text_prompt = None if text_prompt is None else str(text_prompt)
+        self.text_max_new_tokens = text_max_new_tokens
+        self.text_cache_path = None if text_cache_path is None else str(text_cache_path)
 
         pipe = AudioLDM2Pipeline.from_pretrained(self.model_id, torch_dtype=dtype)
         if not hasattr(pipe, "unet") or pipe.unet is None:
@@ -43,8 +51,6 @@ class AudioLDMUNetWrapper(nn.Module):
         self.backbone = pipe.unet.to(device=self.device, dtype=self.dtype)
         self.backbone.eval()
         self.pipeline = pipe if cache_pipeline else None
-        if not cache_pipeline:
-            del pipe
 
         self.config = getattr(self.backbone, "config", None)
         if self.config is None:
@@ -52,6 +58,24 @@ class AudioLDMUNetWrapper(nn.Module):
 
         self._input_block_channels = self._infer_residual_channels()
         self._middle_block_channel = self._infer_mid_block_channel()
+        self.register_buffer("_cached_prompt_embeds", None, persistent=True)
+        self.register_buffer("_cached_attention_mask", None, persistent=True)
+        self.register_buffer("_cached_generated_prompt_embeds", None, persistent=True)
+
+        if self.text_prompt is not None:
+            encoded = self._load_text_cache()
+            if encoded is None:
+                encoded = self.encode_text_prompt(
+                    prompt=self.text_prompt,
+                    max_new_tokens=text_max_new_tokens,
+                    pipe=pipe,
+                )
+                self._save_text_cache(encoded)
+            self._set_cached_text_conditioning(encoded)
+
+        self._offload_text_modules(pipe)
+        if not cache_pipeline:
+            del pipe
 
     @property
     def backend_name(self) -> str:
@@ -74,6 +98,153 @@ class AudioLDMUNetWrapper(nn.Module):
             "conv_in": self.backbone.conv_in,
             "down_blocks": self.backbone.down_blocks,
             "mid_block": self.backbone.mid_block,
+        }
+
+    @staticmethod
+    def _text_module_names() -> tuple[str, ...]:
+        return (
+            "text_encoder",
+            "text_encoder_2",
+            "projection_model",
+            "language_model",
+        )
+
+    def _move_text_modules(self, pipe, device: torch.device) -> None:
+        for name in self._text_module_names():
+            module = getattr(pipe, name, None)
+            if module is not None and hasattr(module, "to"):
+                module.to(device)
+
+    def _offload_text_modules(self, pipe) -> None:
+        self._move_text_modules(pipe, torch.device("cpu"))
+
+    def _text_cache_metadata(self) -> dict[str, object]:
+        return {
+            "model_id": self.model_id,
+            "text_prompt": self.text_prompt,
+            "text_max_new_tokens": self.text_max_new_tokens,
+        }
+
+    def _set_cached_text_conditioning(self, encoded: dict[str, torch.Tensor | None]) -> None:
+        self._cached_prompt_embeds = encoded["prompt_embeds"].detach().cpu()
+        attention_mask = encoded["attention_mask"]
+        self._cached_attention_mask = None if attention_mask is None else attention_mask.detach().cpu()
+        generated = encoded["generated_prompt_embeds"]
+        self._cached_generated_prompt_embeds = None if generated is None else generated.detach().cpu()
+
+    def _load_text_cache(self) -> dict[str, torch.Tensor | None] | None:
+        if self.text_cache_path is None:
+            return None
+        cache_path = Path(self.text_cache_path)
+        if not cache_path.exists():
+            return None
+        payload = torch.load(cache_path, map_location="cpu")
+        if not isinstance(payload, dict):
+            raise TypeError(f"Unsupported text cache format in {cache_path}: {type(payload)}")
+        meta = payload.get("meta", {})
+        expected_meta = self._text_cache_metadata()
+        for key, expected in expected_meta.items():
+            if meta.get(key) != expected:
+                return None
+        prompt_embeds = payload.get("prompt_embeds")
+        generated_prompt_embeds = payload.get("generated_prompt_embeds")
+        attention_mask = payload.get("attention_mask")
+        if not torch.is_tensor(prompt_embeds):
+            raise TypeError(f"text cache {cache_path} is missing tensor 'prompt_embeds'")
+        if generated_prompt_embeds is not None and not torch.is_tensor(generated_prompt_embeds):
+            raise TypeError(f"text cache {cache_path} has invalid 'generated_prompt_embeds'")
+        if attention_mask is not None and not torch.is_tensor(attention_mask):
+            raise TypeError(f"text cache {cache_path} has invalid 'attention_mask'")
+        return {
+            "prompt_embeds": prompt_embeds,
+            "attention_mask": attention_mask,
+            "generated_prompt_embeds": generated_prompt_embeds,
+        }
+
+    def _save_text_cache(self, encoded: dict[str, torch.Tensor | None]) -> None:
+        if self.text_cache_path is None:
+            return
+        cache_path = Path(self.text_cache_path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "meta": self._text_cache_metadata(),
+                "prompt_embeds": encoded["prompt_embeds"].detach().cpu(),
+                "attention_mask": None
+                if encoded["attention_mask"] is None
+                else encoded["attention_mask"].detach().cpu(),
+                "generated_prompt_embeds": None
+                if encoded["generated_prompt_embeds"] is None
+                else encoded["generated_prompt_embeds"].detach().cpu(),
+            },
+            cache_path,
+        )
+
+    def encode_text_prompt(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int | None = None,
+        pipe=None,
+    ) -> dict[str, torch.Tensor | None]:
+        active_pipe = self.pipeline if pipe is None else pipe
+        if active_pipe is None:
+            raise RuntimeError("Text prompt encoding requires a live AudioLDM2 pipeline instance.")
+
+        self._move_text_modules(active_pipe, self.device)
+        prompt_embeds, attention_mask, generated_prompt_embeds = active_pipe.encode_prompt(
+            prompt=prompt,
+            device=self.device,
+            num_waveforms_per_prompt=1,
+            do_classifier_free_guidance=False,
+            max_new_tokens=max_new_tokens,
+        )
+        return {
+            "prompt_embeds": prompt_embeds.detach(),
+            "attention_mask": None if attention_mask is None else attention_mask.detach(),
+            "generated_prompt_embeds": None
+            if generated_prompt_embeds is None
+            else generated_prompt_embeds.detach(),
+        }
+
+    def has_cached_text_conditioning(self) -> bool:
+        return self._cached_prompt_embeds is not None
+
+    @staticmethod
+    def _expand_cached_batch(x: torch.Tensor | None, batch_size: int) -> torch.Tensor | None:
+        if x is None:
+            return None
+        if x.shape[0] == batch_size:
+            return x
+        if x.shape[0] != 1:
+            raise RuntimeError(
+                f"Expected cached text conditioning batch dimension 1 or {batch_size}, got {x.shape[0]}"
+            )
+        repeat_shape = [batch_size] + [1] * (x.dim() - 1)
+        return x.repeat(*repeat_shape)
+
+    def get_text_conditioning(
+        self,
+        *,
+        batch_size: int,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> dict[str, torch.Tensor | None]:
+        if self._cached_prompt_embeds is None:
+            raise RuntimeError("No cached text conditioning is available in the pretrained U-Net wrapper.")
+        device = torch.device(device)
+        prompt_embeds = self._expand_cached_batch(self._cached_prompt_embeds, batch_size)
+        generated_prompt_embeds = self._expand_cached_batch(
+            self._cached_generated_prompt_embeds,
+            batch_size,
+        )
+        attention_mask = self._expand_cached_batch(self._cached_attention_mask, batch_size)
+        return {
+            "encoder_hidden_states": None
+            if generated_prompt_embeds is None
+            else generated_prompt_embeds.to(device=device, dtype=dtype),
+            "encoder_hidden_states_1": prompt_embeds.to(device=device, dtype=dtype),
+            "attention_mask": None if attention_mask is None else attention_mask.to(device=device),
         }
 
     @property

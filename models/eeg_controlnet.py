@@ -23,6 +23,8 @@ class EEGControlNetModel(nn.Module):
         audio_sample_rate: int = 16000,
         audio_freeze_vae: bool = True,
         audio_use_mode: bool = False,
+        text_prompt: str = "Pop music",
+        text_cache_path: str | None = None,
         enable_audio_encoder: bool = True,
         latent_channels: int | None = None,
         latent_grid: tuple[int, int, int] | None = None,
@@ -98,6 +100,8 @@ class EEGControlNetModel(nn.Module):
             device=device,
             dtype=torch.float16 if device.type == "cuda" else torch.float32,
             cache_pipeline=bool(unet_cache_pipeline),
+            text_prompt=text_prompt,
+            text_cache_path=text_cache_path,
         )
         unet_in_channels = getattr(self.control_unet.config, "in_channels", None)
         unet_out_channels = getattr(self.control_unet.config, "out_channels", None)
@@ -199,10 +203,8 @@ class EEGControlNetModel(nn.Module):
 
         zt, noise = self.q_sample(z0, timesteps=timesteps, noise=noise)
         projected_latent = self.projector(eeg).to(dtype=unet_dtype)
-        encoder_state_dict = self.control_unet.prepare_encoder_hidden_states(
+        encoder_state_dict = self.control_unet.get_text_conditioning(
             batch_size=zt.shape[0],
-            encoder_hidden_states=None,
-            encoder_hidden_states_1=None,
             device=zt.device,
             dtype=unet_dtype,
         )

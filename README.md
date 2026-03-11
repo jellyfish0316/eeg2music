@@ -34,12 +34,12 @@ What is already true on `main`:
 
 - the denoiser backbone is the pretrained diffusers `AudioLDM2Pipeline.unet`
 - the ControlNet branch is copied from the pretrained U-Net encoder and middle block
+- the fixed prompt from `data.text_prompt` is encoded through `AudioLDM2Pipeline.encode_prompt()`
 - training and validation run end-to-end with finite losses on the current config
 
 What is still missing:
 
-- the AudioLDM2 text-conditioning path is not yet driven by a real text encoder output
-- the main training path currently feeds placeholder zero hidden states into the U-Net cross-attention inputs
+- text conditioning is currently fixed-prompt only; it is not yet driven by per-sample dataset text
 
 ## Repo Layout
 
@@ -63,7 +63,7 @@ The default config expects:
 - EEG sample rate `125 Hz`
 - audio sample rate `16 kHz`
 
-`data.text_prompt` defaults to `"Pop music"` in the dataset/config layer, but the current training path does not yet encode that prompt through AudioLDM2's text encoders. The pretrained U-Net currently receives placeholder zero hidden states.
+`data.text_prompt` defaults to `"Pop music"` and is encoded once at model initialization through `AudioLDM2Pipeline.encode_prompt()`. The cached prompt embeddings are then reused for every batch.
 
 Default EEG preprocessing is intentionally minimal:
 
@@ -81,6 +81,7 @@ Important fields:
 - `data.text_prompt`: dataset-level/default prompt string, default `"Pop music"`
 - `data.eeg_preprocessing`: explicit preprocessing policy
 - `model.unet.cache_pipeline`: keep the diffusers pipeline object alive after extracting the pretrained U-Net
+- `model.unet.text_cache_path`: optional on-disk cache for fixed-prompt AudioLDM2 text embeddings
 - `model.projector.channels`: default `[256, 512, 1024, 2048]`
 - `model.projector.strides`: default `[5, 2, 2, 2]`
 - `model.projector.lat_grid`: set to `null` by default, so latent shape is derived from latent cache or checkpoint
@@ -168,6 +169,8 @@ Typical artifacts:
 - per-condition `result.json`
 - per-condition `model.pt`
 
+`model.pt` now includes the cached fixed-prompt text embeddings via persistent buffers, so loading the checkpoint does not require regenerating them.
+
 ## Example Result
 
 A minimal sanity run should produce logs like:
@@ -200,6 +203,12 @@ The config default points to:
 data/precomputed/song21_audioldm2_latents.pt
 ```
 
+The fixed prompt text cache defaults to:
+
+```text
+data/precomputed/audioldm2_text_pop_music.pt
+```
+
 ## Implementation Status
 
 What is aligned now:
@@ -214,7 +223,7 @@ What is still approximate:
 
 - `L(y,s)` is implemented as affine modulation, because the paper does not provide a more exact public implementation
 - exact paper code is unavailable, so some internal ControlNet block mapping is inferred from the diffusers AudioLDM2 U-Net block structure
-- text conditioning is not yet driven by the real AudioLDM2 text-encoder outputs
+- text conditioning is fixed-prompt only, not yet per-sample or prompt-variable
 
 ## Decisions Made Without an Official Repo
 
@@ -242,7 +251,7 @@ Reason: the paper description includes encoder-path residual control and is comp
 Reason: the paper-aligned path should be `EEG projector -> ControlNet residual injection`, not `global EEG embedding -> extra U-Net conditioning`.
 
 - The dataset/config default prompt remains `"Pop music"`, and EEG preprocessing is kept minimal.
-Reason: those two details are closer to the paper's stated setup than adding extra handcrafted EEG transforms, even though the runtime text path is not fully wired yet.
+Reason: those two details are closer to the paper's stated setup than adding extra handcrafted EEG transforms, and the fixed prompt is now encoded through the official AudioLDM2 text path.
 
 - Internal block/channel matching for ControlNet residual injection is inferred from the pretrained diffusers `AudioLDM2Pipeline.unet` structure in [audioldm_unet_wrapper.py](/home/bryan/eeg/models/audioldm_unet_wrapper.py).
 Reason: with no official repo, the pretrained diffusers module graph is the most concrete source of truth for stage alignment.
@@ -265,6 +274,7 @@ If you use this repo, cite the original paper first. A basic BibTeX stub:
 ## Known Practical Notes
 
 - The runtime U-Net is loaded from `diffusers` `AudioLDM2Pipeline`; the vendored AudioLDM subset is no longer the training backbone.
-- The current U-Net text-conditioning tensors are placeholders, not real AudioLDM2 text-encoder outputs.
+- The current text conditioning is a cached fixed prompt, not yet per-sample prompt conditioning.
+- Fixed-prompt text embeddings can be cached on disk through `model.unet.text_cache_path` and are also saved inside `model.pt`.
 - On some systems you may see CUDA or joblib warnings during import or tests; the current smoke tests still pass under those warnings.
 - `model.projector.lat_grid` should usually stay `null` unless you intentionally want to override checkpoint-derived shape.
