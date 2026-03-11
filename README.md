@@ -1,16 +1,16 @@
-# EEG AudioLDM2 Reproduction
+# EEG Attention-Guided Music Experiment Framework
 
-EEG-conditioned latent diffusion prototype built on pretrained `AudioLDM2-music`.
+Proposal-driven EEG-to-music experiment framework built on pretrained `AudioLDM2-music`.
 
-Target paper:
+Reference paper:
 
 - *Naturalistic Music Decoding from EEG Data via Latent Diffusion Models*
 
-Current model path:
+Reference model path:
 
 `EEG -> subject adapter -> 1D Conv projector -> ControlNet encoder copy -> frozen AudioLDM2 U-Net -> latent diffusion`
 
-The active training path now uses:
+The current implementation uses:
 
 - subject-aware EEG affine modulation
 - 1D temporal EEG projector
@@ -20,7 +20,7 @@ The active training path now uses:
 
 ## Overview
 
-This repo aims to reproduce the paper's EEG-conditioned latent diffusion setup without an official author release. The implementation is intentionally explicit about what is already aligned with the paper and what is still approximate.
+This repo is intended to support the proposal's attention-guided EEG-to-music experiments, using *Naturalistic Music Decoding from EEG Data via Latent Diffusion Models* as the backbone reference architecture. It is not positioned as a full end-to-end reproduction of the paper. The implementation is intentionally explicit about which parts are paper-aligned and which proposal-specific pieces still depend on real data.
 
 At a high level, the system:
 
@@ -30,16 +30,31 @@ At a high level, the system:
 4. injects ControlNet-style residuals into a frozen AudioLDM2 U-Net encoder
 5. trains against diffusion noise prediction in latent space
 
-What is already true on `main`:
+## Current Status
+
+Paper-aligned components already present on `main`:
 
 - the denoiser backbone is the pretrained diffusers `AudioLDM2Pipeline.unet`
 - the ControlNet branch is copied from the pretrained U-Net encoder and middle block
 - the fixed prompt from `data.text_prompt` is encoded through `AudioLDM2Pipeline.encode_prompt()`
-- training and validation run end-to-end with finite losses on the current config
+- the repo supports the current condition types `multi_attention`, `single_repeated`, and `passive_x3`
+- training uses LOSO subject splits and can select checkpoints with CLAP-based validation on the current config
 
-What is still missing:
+Proposal-specific work not yet validated without real data:
 
-- text conditioning is currently fixed-prompt only; it is not yet driven by per-sample dataset text
+- the current config does not prove that attention conditions come from distinct real recordings
+- preprocessing assumptions are still placeholders until the actual dataset is inspected
+- current smoke-oriented configs and outputs should not be treated as proposal-level experiment results
+
+## Paper Vs Proposal
+
+The original paper is the model reference, but the proposal extends it in several important ways.
+
+- The paper provides the latent diffusion backbone: pretrained `AudioLDM2-music`, frozen U-Net, ControlNet conditioning, fixed prompt usage, and CLAP-oriented validation.
+- The proposal adds attention-guided condition design, especially multi-attention integration across `drum`, `vocal`, and `guitar` style recordings.
+- The proposal also shifts the experimental emphasis toward LOSO pilot evaluation and explicit comparisons between `multi_attention`, `single_repeated`, and `passive_x3`.
+
+Because of that, proposal assumptions may differ from the original paper in subject count, preprocessing policy, condition construction, and evaluation setup. This README treats the paper as the architectural baseline and the proposal as the active experimental target.
 
 ## Repo Layout
 
@@ -192,6 +207,8 @@ saved: outputs/loso_runs/all_results.json
 saved: outputs/loso_runs/pairwise_report.json
 ```
 
+These logs indicate that the current training path is wired correctly. They do not, by themselves, establish that the proposal experiment has been completed.
+
 ## Generation And Evaluation
 
 Generate decoded audio from a trained checkpoint:
@@ -218,6 +235,38 @@ python scripts/evaluate_generation.py \
 ## Latent Cache
 
 If `latent_cache.enabled: true`, training uses precomputed AudioLDM2 latents instead of encoding waveform on the fly.
+
+## What Must Be Done After Data Arrives
+
+The following milestones should be completed before claiming that proposal-level experiments are running:
+
+1. Data audit
+
+Verify subject count, condition definitions, recording alignment, EEG sampling rate, usable channel count, and whether each attention condition is truly a separate recording rather than a placeholder reuse.
+
+2. Preprocessing alignment
+
+Implement or confirm the final preprocessing pipeline required by the proposal and the paper reference, including channel selection, scaling policy, and any clamping or normalization rules.
+
+3. Dataset wiring
+
+Map the real condition-specific files into `multi_attention`, `single_repeated`, and `passive_x3` so each branch uses the intended source recordings.
+
+4. Config finalization
+
+Update chunk length, EEG sample rate, train/validation/test policy, LOSO settings, and latent-cache assumptions so they match the real dataset rather than the current smoke defaults.
+
+5. Baselines and controls
+
+Run the proposal's comparison conditions and confirm that each control is matched by actual data design, not only by tensor shape or repeated placeholders.
+
+6. Evaluation
+
+Generate audio and compute the agreed metrics, keeping smoke outputs clearly separated from real experiment outputs.
+
+7. Result validation
+
+Compare observed results against both the original paper and the proposal hypotheses, then document where the implementation matches, extends, or diverges from each.
 
 To generate latents with the current script:
 
