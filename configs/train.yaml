@@ -95,8 +95,8 @@ train:
   epochs: 1
   grad_clip: 1.0
   log_every: 10
-  validation_metric: loss
-  validation_num_inference_steps: 20
+  validation_metric: clap
+  validation_num_inference_steps: 5
   validation_generate_batches: 1
   best_checkpoint_name: best_model.pt
   run_mode: single_fold
