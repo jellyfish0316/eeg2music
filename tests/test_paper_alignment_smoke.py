@@ -187,7 +187,7 @@ class FakeUNet(nn.Module):
             (),
             {
                 "block_out_channels": [model_channels, model_channels],
-                "cross_attention_dim": model_channels,
+                "cross_attention_dim": [model_channels + 2, model_channels],
                 "in_channels": channels,
                 "out_channels": channels,
                 "class_embed_type": None,
@@ -242,6 +242,8 @@ class FakeUNet(nn.Module):
 
 
 class FakeAudioLDM2Pipeline:
+    encode_prompt_calls = 0
+
     def __init__(self, unet: nn.Module) -> None:
         self.unet = unet
 
@@ -250,12 +252,51 @@ class FakeAudioLDM2Pipeline:
         del model_id, torch_dtype
         return cls(FakeUNet())
 
+    def encode_prompt(
+        self,
+        prompt,
+        device,
+        num_waveforms_per_prompt,
+        do_classifier_free_guidance,
+        transcription=None,
+        negative_prompt=None,
+        prompt_embeds: torch.Tensor | None = None,
+        negative_prompt_embeds: torch.Tensor | None = None,
+        generated_prompt_embeds: torch.Tensor | None = None,
+        negative_generated_prompt_embeds: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        negative_attention_mask: torch.Tensor | None = None,
+        max_new_tokens: int | None = None,
+    ):
+        del transcription
+        del negative_prompt
+        del prompt_embeds
+        del negative_prompt_embeds
+        del generated_prompt_embeds
+        del negative_generated_prompt_embeds
+        del attention_mask
+        del negative_attention_mask
+        del max_new_tokens
+        assert do_classifier_free_guidance is False
+        assert num_waveforms_per_prompt == 1
+        FakeAudioLDM2Pipeline.encode_prompt_calls += 1
+        batch_size = 1 if isinstance(prompt, str) else len(prompt)
+        primary = torch.full((batch_size, 1, 8), 0.25, device=device, dtype=torch.float32)
+        attn = torch.ones((batch_size, 1), device=device, dtype=torch.long)
+        secondary = torch.full((batch_size, 3, 10), 0.5, device=device, dtype=torch.float32)
+        return primary, attn, secondary
+
 
 def install_fake_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeAudioLDM2Pipeline.encode_prompt_calls = 0
     monkeypatch.setattr(unet_wrapper_module, "AudioLDM2Pipeline", FakeAudioLDM2Pipeline)
 
 
-def build_test_model(monkeypatch: pytest.MonkeyPatch) -> EEGControlNetModel:
+def build_test_model(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    text_cache_path: str | None = None,
+) -> EEGControlNetModel:
     install_fake_pipeline(monkeypatch)
     return EEGControlNetModel(
         eeg_channels=12,
@@ -266,6 +307,8 @@ def build_test_model(monkeypatch: pytest.MonkeyPatch) -> EEGControlNetModel:
         latent_grid=(8, 16, 87),
         projector_use_linear_fallback=True,
         audio_model_id="fake/audioldm2",
+        text_prompt="Pop music",
+        text_cache_path=text_cache_path,
         controlnet_enabled=True,
         controlnet_copy_encoder_weights=True,
         controlnet_inject_middle_block=True,
@@ -279,10 +322,52 @@ def test_pretrained_unet_wrapper_uses_pipeline_loader(monkeypatch: pytest.Monkey
         device="cpu",
         dtype=torch.float32,
         cache_pipeline=True,
+        text_prompt="Pop music",
     )
     assert wrapper.backend_name == "diffusers_pretrained_unet"
     assert wrapper.pipeline is not None
     assert isinstance(wrapper.backbone, FakeUNet)
+    assert FakeAudioLDM2Pipeline.encode_prompt_calls == 1
+    conditioning = wrapper.get_text_conditioning(batch_size=2, device="cpu", dtype=torch.float32)
+    assert conditioning["encoder_hidden_states"].shape == (2, 3, 10)
+    assert conditioning["encoder_hidden_states_1"].shape == (2, 1, 8)
+    assert not torch.allclose(
+        conditioning["encoder_hidden_states"],
+        torch.zeros_like(conditioning["encoder_hidden_states"]),
+    )
+
+
+def test_text_cache_file_reuses_fixed_prompt_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    install_fake_pipeline(monkeypatch)
+    cache_path = tmp_path / "text_cache.pt"
+    wrapper = unet_wrapper_module.AudioLDMUNetWrapper(
+        model_id="fake/audioldm2",
+        device="cpu",
+        dtype=torch.float32,
+        cache_pipeline=True,
+        text_prompt="Pop music",
+        text_cache_path=str(cache_path),
+    )
+    assert cache_path.exists()
+    assert FakeAudioLDM2Pipeline.encode_prompt_calls == 1
+    cached_state = wrapper.state_dict()
+    assert "_cached_prompt_embeds" in cached_state
+    assert "_cached_generated_prompt_embeds" in cached_state
+
+    wrapper_2 = unet_wrapper_module.AudioLDMUNetWrapper(
+        model_id="fake/audioldm2",
+        device="cpu",
+        dtype=torch.float32,
+        cache_pipeline=True,
+        text_prompt="Pop music",
+        text_cache_path=str(cache_path),
+    )
+    assert FakeAudioLDM2Pipeline.encode_prompt_calls == 1
+    conditioning = wrapper_2.get_text_conditioning(batch_size=1, device="cpu", dtype=torch.float32)
+    assert conditioning["encoder_hidden_states"] is not None
 
 
 def test_pretrained_unet_load_failure_is_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,6 +396,7 @@ def test_deprecated_unet_config_keys_fail_cleanly() -> None:
 def test_paper_aligned_forward_backward_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     torch.manual_seed(0)
     model = build_test_model(monkeypatch)
+    assert FakeAudioLDM2Pipeline.encode_prompt_calls == 1
 
     eeg = torch.randn(2, 12, 437)
     z0 = torch.randn(2, 8, 16, 87)
@@ -318,10 +404,19 @@ def test_paper_aligned_forward_backward_smoke(monkeypatch: pytest.MonkeyPatch) -
     timesteps = model.sample_timesteps(batch_size=2, device=torch.device("cpu"))
 
     out = model(eeg=eeg, subject_idx=subject_idx, z0=z0, timesteps=timesteps, use_control=True)
+    assert FakeAudioLDM2Pipeline.encode_prompt_calls == 1
     assert out["projected_latent"].shape == (2, 8, 16, 87)
     assert out["eps_pred"].shape == (2, 8, 16, 87)
     assert torch.isfinite(out["loss"])
     assert out["control_residuals"] is not None
+    conditioning = model.control_unet.get_text_conditioning(batch_size=2, device="cpu", dtype=torch.float32)
+    assert conditioning["encoder_hidden_states_1"] is not None
+    assert conditioning["encoder_hidden_states"].shape[-1] == 10
+    assert conditioning["encoder_hidden_states_1"].shape[-1] == 8
+    assert not torch.allclose(
+        conditioning["encoder_hidden_states_1"],
+        torch.zeros_like(conditioning["encoder_hidden_states_1"]),
+    )
     assert len(out["control_residuals"]["down_block_residuals"]) == len(
         model.control_unet.control_specs["input_block_channels"]
     )

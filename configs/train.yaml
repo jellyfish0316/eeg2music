@@ -52,6 +52,7 @@ model:
     use_linear_fallback: true
   unet:
     cache_pipeline: true
+    text_cache_path: data/precomputed/audioldm2_text_pop_music.pt
 
 audio_encoder:
   model_id: cvssp/audioldm2-music
