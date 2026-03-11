@@ -18,6 +18,7 @@ from datasets.condition_nmedt_dataset import ConditionNMEDTDataset
 from models.eeg_controlnet import EEGControlNetModel
 from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
 from utils.loso import create_loso_subject_splits
+from utils.generation import batch_clap_similarity, generate_latents
 from utils.seed import set_seed
 
 
@@ -168,6 +169,64 @@ def build_dataloader(
     return dataset, loader
 
 
+def build_model_from_dataset(
+    cfg: dict,
+    *,
+    dataset: ConditionNMEDTDataset,
+    device: torch.device,
+) -> EEGControlNetModel:
+    data_cfg = cfg["data"]
+    model_cfg = cfg["model"]
+    audio_cfg = cfg.get("audio_encoder", {})
+    latent_cfg = cfg.get("latent_cache", {})
+    control_cfg = cfg.get("controlnet", {})
+
+    use_precomputed_latents = bool(latent_cfg.get("enabled", False))
+    latent_channels = latent_cfg.get("latent_channels")
+    if latent_channels is None and dataset.z0_by_chunk is not None:
+        latent_channels = int(dataset.z0_by_chunk.shape[1])
+    latent_grid = derive_latent_grid(cfg, dataset=dataset, device=device)
+
+    model = EEGControlNetModel(
+        eeg_channels=int(dataset.eeg_out_channels),
+        num_subjects=int(dataset.total_subjects),
+        use_subject_adapter=bool(model_cfg.get("use_subject_adapter", True)),
+        subject_emb_dim=int(model_cfg.get("subject_emb_dim", 64)),
+        device=device,
+        audio_model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
+        audio_sample_rate=audio_cfg.get("sample_rate", data_cfg["audio_fs"]),
+        audio_freeze_vae=bool(audio_cfg.get("freeze_vae", True)),
+        audio_use_mode=bool(audio_cfg.get("use_mode", False)),
+        text_prompt=str(data_cfg.get("text_prompt", "Pop music")),
+        text_cache_path=model_cfg.get("unet", {}).get("text_cache_path"),
+        enable_audio_encoder=not use_precomputed_latents,
+        latent_channels=latent_channels,
+        latent_grid=latent_grid,
+        projector_channels=tuple(model_cfg.get("projector", {}).get("channels", [256, 512, 1024, 2048])),
+        projector_strides=tuple(model_cfg.get("projector", {}).get("strides", [5, 2, 2, 2])),
+        projector_use_linear_fallback=bool(model_cfg.get("projector", {}).get("use_linear_fallback", True)),
+        diffusion_num_steps=int(cfg["diffusion"]["num_train_timesteps"]),
+        diffusion_beta_start=float(cfg["diffusion"]["beta_start"]),
+        diffusion_beta_end=float(cfg["diffusion"]["beta_end"]),
+        unet_cache_pipeline=bool(model_cfg.get("unet", {}).get("cache_pipeline", True)),
+        controlnet_enabled=bool(control_cfg.get("enabled", False)),
+        controlnet_zero_init=bool(control_cfg.get("zero_init", True)),
+        controlnet_scale=float(control_cfg.get("control_scale", 1.0)),
+        controlnet_copy_encoder_weights=bool(control_cfg.get("copy_encoder_weights", True)),
+        controlnet_inject_middle_block=bool(control_cfg.get("inject_middle_block", True)),
+    ).to(device)
+    with torch.no_grad():
+        dummy_eeg = torch.zeros(
+            1,
+            int(dataset.eeg_out_channels),
+            int(cfg["data"]["eeg_time"]),
+            device=device,
+            dtype=torch.float32,
+        )
+        model.projector(dummy_eeg)
+    return model
+
+
 @torch.no_grad()
 def evaluate_loss(
     model: EEGControlNetModel,
@@ -217,6 +276,48 @@ def evaluate_loss(
     return float(sum(losses) / len(losses))
 
 
+@torch.no_grad()
+def evaluate_generation_clap(
+    model: EEGControlNetModel,
+    loader: DataLoader,
+    device: torch.device,
+    control_cfg: dict,
+    audio_helper: AudioLDM2MusicEncoderWrapper,
+    *,
+    sample_rate: int,
+    num_inference_steps: int,
+    max_batches: int | None = None,
+) -> float:
+    model.eval()
+    scores = []
+    for step, batch in enumerate(loader):
+        if max_batches is not None and step >= max_batches:
+            break
+        eeg = batch["eeg"].to(device)
+        subject_idx = batch["subject_idx"].to(device)
+        target_audio = batch["audio"]
+        pred_latents = generate_latents(
+            model,
+            eeg=eeg,
+            subject_idx=subject_idx,
+            num_inference_steps=num_inference_steps,
+            use_control=bool(control_cfg.get("enabled", False)),
+            control_scale=float(control_cfg.get("control_scale", 1.0)),
+        )
+        predicted_audio = audio_helper.decode_latents_to_waveform(pred_latents)
+        sims = batch_clap_similarity(
+            audio_helper,
+            predicted_audio,
+            target_audio,
+            sample_rate=sample_rate,
+        )
+        scores.extend(float(v) for v in sims.tolist())
+    model.train()
+    if len(scores) == 0:
+        return float("nan")
+    return float(sum(scores) / len(scores))
+
+
 def run_one_condition(
     cfg: dict,
     *,
@@ -259,40 +360,7 @@ def run_one_condition(
         shuffle=False,
     )
 
-    use_precomputed_latents = bool(latent_cfg.get("enabled", False))
-    latent_channels = latent_cfg.get("latent_channels")
-    if latent_channels is None and ds_train.z0_by_chunk is not None:
-        latent_channels = int(ds_train.z0_by_chunk.shape[1])
-    latent_grid = derive_latent_grid(cfg, dataset=ds_train, device=device)
-
-    model = EEGControlNetModel(
-        eeg_channels=int(ds_train.eeg_out_channels),
-        num_subjects=int(ds_train.total_subjects),
-        use_subject_adapter=bool(model_cfg.get("use_subject_adapter", True)),
-        subject_emb_dim=int(model_cfg.get("subject_emb_dim", 64)),
-        device=device,
-        audio_model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
-        audio_sample_rate=audio_cfg.get("sample_rate", data_cfg["audio_fs"]),
-        audio_freeze_vae=bool(audio_cfg.get("freeze_vae", True)),
-        audio_use_mode=bool(audio_cfg.get("use_mode", False)),
-        text_prompt=str(data_cfg.get("text_prompt", "Pop music")),
-        text_cache_path=model_cfg.get("unet", {}).get("text_cache_path"),
-        enable_audio_encoder=not use_precomputed_latents,
-        latent_channels=latent_channels,
-        latent_grid=latent_grid,
-        projector_channels=tuple(model_cfg.get("projector", {}).get("channels", [256, 512, 1024, 2048])),
-        projector_strides=tuple(model_cfg.get("projector", {}).get("strides", [5, 2, 2, 2])),
-        projector_use_linear_fallback=bool(model_cfg.get("projector", {}).get("use_linear_fallback", True)),
-        diffusion_num_steps=int(cfg["diffusion"]["num_train_timesteps"]),
-        diffusion_beta_start=float(cfg["diffusion"]["beta_start"]),
-        diffusion_beta_end=float(cfg["diffusion"]["beta_end"]),
-        unet_cache_pipeline=bool(model_cfg.get("unet", {}).get("cache_pipeline", True)),
-        controlnet_enabled=bool(control_cfg.get("enabled", False)),
-        controlnet_zero_init=bool(control_cfg.get("zero_init", True)),
-        controlnet_scale=float(control_cfg.get("control_scale", 1.0)),
-        controlnet_copy_encoder_weights=bool(control_cfg.get("copy_encoder_weights", True)),
-        controlnet_inject_middle_block=bool(control_cfg.get("inject_middle_block", True)),
-    ).to(device)
+    model = build_model_from_dataset(cfg, dataset=ds_train, device=device)
 
     freeze_stats = apply_freeze_policy(model, control_cfg)
     optimizer = torch.optim.Adam(
@@ -311,7 +379,26 @@ def run_one_condition(
     epochs = int(train_cfg["epochs"])
     log_every = int(train_cfg.get("log_every", 10))
     grad_clip = float(train_cfg.get("grad_clip", 1.0))
-    history = {"train_loss": [], "val_loss": []}
+    validation_metric = str(train_cfg.get("validation_metric", "loss")).lower()
+    validation_generate_batches = train_cfg.get("validation_generate_batches", None)
+    if validation_generate_batches is not None:
+        validation_generate_batches = int(validation_generate_batches)
+    validation_num_inference_steps = int(train_cfg.get("validation_num_inference_steps", 20))
+    history = {"train_loss": [], "val_loss": [], "val_clap": []}
+    best_metric_name = "val_clap" if validation_metric == "clap" else "val_loss"
+    best_metric_value = float("-inf") if validation_metric == "clap" else float("inf")
+    best_ckpt_name = str(train_cfg.get("best_checkpoint_name", "best_model.pt"))
+    best_ckpt_path = output_dir / best_ckpt_name
+    clap_helper = None
+    if validation_metric == "clap":
+        clap_helper = AudioLDM2MusicEncoderWrapper(
+            model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
+            sample_rate=int(audio_cfg.get("sample_rate", data_cfg["audio_fs"])),
+            device=str(device),
+            dtype=torch.float16 if device.type == "cuda" else torch.float32,
+            freeze_vae=True,
+            use_mode=bool(audio_cfg.get("use_mode", False)),
+        )
 
     for epoch in range(epochs):
         model.train()
@@ -370,11 +457,31 @@ def run_one_condition(
 
         train_loss = float(sum(running) / max(1, len(running)))
         val_loss = evaluate_loss(model, dl_val, device, control_cfg, max_steps=max_steps)
+        val_clap = float("nan")
+        if validation_metric == "clap":
+            if clap_helper is None:
+                raise RuntimeError("validation_metric='clap' requires a CLAP/audio helper.")
+            val_clap = evaluate_generation_clap(
+                model,
+                dl_val,
+                device,
+                control_cfg,
+                clap_helper,
+                sample_rate=int(data_cfg["audio_fs"]),
+                num_inference_steps=validation_num_inference_steps,
+                max_batches=validation_generate_batches,
+            )
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
+        history["val_clap"].append(val_clap)
+        current_metric = val_clap if validation_metric == "clap" else val_loss
+        is_better = current_metric > best_metric_value if validation_metric == "clap" else current_metric < best_metric_value
+        if torch.isfinite(torch.tensor(current_metric)) and is_better:
+            best_metric_value = float(current_metric)
+            torch.save(model.state_dict(), best_ckpt_path)
         print(
             f"[fold {fold_meta['fold_index']}][{condition_name}] epoch={epoch} "
-            f"train_loss={train_loss:.6f} val_loss={val_loss:.6f}",
+            f"train_loss={train_loss:.6f} val_loss={val_loss:.6f} val_clap={val_clap:.6f}",
             flush=True,
         )
 
@@ -393,10 +500,13 @@ def run_one_condition(
         "test_subjects": fold_meta["test_subjects"],
         "history": history,
         "test_loss": test_loss,
+        "best_metric_name": best_metric_name,
+        "best_metric_value": float(best_metric_value),
         "trainable_params": int(freeze_stats["total_trainable"]),
         "total_params": int(sum(p.numel() for p in model.parameters())),
         "unet_backend": model.control_unet.backend_name,
         "checkpoint_path": str(ckpt_path),
+        "best_checkpoint_path": str(best_ckpt_path),
     }
 
 

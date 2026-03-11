@@ -46,6 +46,8 @@ What is still missing:
 - [configs/train.yaml](/home/bryan/eeg/configs/train.yaml): main training config
 - [scripts/train.py](/home/bryan/eeg/scripts/train.py): LOSO training entrypoint
 - [scripts/precompute_latents.py](/home/bryan/eeg/scripts/precompute_latents.py): precompute AudioLDM2 latents
+- [scripts/generate.py](/home/bryan/eeg/scripts/generate.py): decode EEG-conditioned latents into `.wav` files
+- [scripts/evaluate_generation.py](/home/bryan/eeg/scripts/evaluate_generation.py): CLAP audio-similarity evaluation over generated vs target audio
 - [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py): main model
 - [models/eeg_projector.py](/home/bryan/eeg/models/eeg_projector.py): paper-style EEG projector
 - [models/audioldm_control_branch.py](/home/bryan/eeg/models/audioldm_control_branch.py): ControlNet adapter branch
@@ -88,6 +90,8 @@ Important fields:
 - `model.projector.use_linear_fallback`: fallback only when temporal length does not match latent grid exactly
 - `controlnet.copy_encoder_weights`: must remain `true` for paper-aligned behavior
 - `controlnet.inject_middle_block`: whether to inject ControlNet residuals at the U-Net middle block
+- `train.validation_metric`: `loss` by default; set to `clap` to select checkpoints with generation-based validation
+- `train.validation_num_inference_steps`: denoising steps used for optional validation-by-generation
 
 ## Environment
 
@@ -168,6 +172,7 @@ Typical artifacts:
 - `pairwise_report.json`
 - per-condition `result.json`
 - per-condition `model.pt`
+- optional `best_model.pt` when generation-based validation is enabled
 
 `model.pt` now includes the cached fixed-prompt text embeddings via persistent buffers, so loading the checkpoint does not require regenerating them.
 
@@ -183,6 +188,29 @@ condition_jobs: ['multi_attention', 'passive_x3']
 [fold 0][passive_x3] ... loss=...
 saved: outputs/loso_runs/all_results.json
 saved: outputs/loso_runs/pairwise_report.json
+```
+
+## Generation And Evaluation
+
+Generate decoded audio from a trained checkpoint:
+
+```bash
+python scripts/generate.py \
+  --config configs/train.yaml \
+  --checkpoint outputs/loso_runs/fold_00/multi_attention/model.pt \
+  --fold 0 \
+  --condition multi_attention \
+  --split test \
+  --num-inference-steps 50 \
+  --output-dir outputs/generated_audio/multi_attention
+```
+
+Evaluate generated audio against target chunks with CLAP audio cosine:
+
+```bash
+python scripts/evaluate_generation.py \
+  --manifest outputs/generated_audio/multi_attention/manifest.json \
+  --output-dir outputs/generated_audio/eval
 ```
 
 ## Latent Cache

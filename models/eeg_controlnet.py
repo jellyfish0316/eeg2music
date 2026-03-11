@@ -168,40 +168,25 @@ class EEGControlNetModel(nn.Module):
         zt = sqrt_alpha_t * z0 + sqrt_one_minus_alpha_t * noise
         return zt, noise
 
-    def forward(
+    def predict_noise(
         self,
         eeg: torch.Tensor,
         subject_idx: torch.Tensor,
-        audio: torch.Tensor | None = None,
-        z0: torch.Tensor | None = None,
-        timesteps: torch.Tensor | None = None,
-        noise: torch.Tensor | None = None,
+        zt: torch.Tensor,
+        timesteps: torch.Tensor,
         control_scale: float | None = None,
         use_control: bool = True,
     ) -> dict[str, torch.Tensor | dict[str, object] | None]:
+        if zt.dim() != 4:
+            raise RuntimeError(f"Expected zt to be 4D [B,C,H,W], got {tuple(zt.shape)}")
+        if zt.shape[1] != self.latent_channels:
+            raise RuntimeError(f"zt channels ({zt.shape[1]}) != model latent_channels ({self.latent_channels})")
+
         if self.use_subject_adapter:
             eeg = self.subject_adapter(eeg, subject_idx)
 
-        if z0 is None:
-            if audio is None:
-                raise ValueError("Either z0 or audio must be provided.")
-            if self.audio_encoder is None:
-                raise RuntimeError("audio_encoder is disabled but audio was provided.")
-            z0 = self.audio_encoder(audio)
-
-        if z0.dim() != 4:
-            raise RuntimeError(f"Expected z0 to be 4D [B,C,H,W], got {tuple(z0.shape)}")
-        if z0.shape[1] != self.latent_channels:
-            raise RuntimeError(f"z0 channels ({z0.shape[1]}) != model latent_channels ({self.latent_channels})")
         unet_dtype = self.control_unet.dtype
-        z0 = z0.to(dtype=unet_dtype)
-
-        if timesteps is None:
-            timesteps = self.sample_timesteps(batch_size=z0.shape[0], device=z0.device)
-        if timesteps.shape != (z0.shape[0],):
-            raise RuntimeError(f"Expected timesteps {(z0.shape[0],)}, got {tuple(timesteps.shape)}")
-
-        zt, noise = self.q_sample(z0, timesteps=timesteps, noise=noise)
+        zt = zt.to(dtype=unet_dtype)
         projected_latent = self.projector(eeg).to(dtype=unet_dtype)
         encoder_state_dict = self.control_unet.get_text_conditioning(
             batch_size=zt.shape[0],
@@ -230,15 +215,63 @@ class EEGControlNetModel(nn.Module):
             control_residuals=control_residuals,
             control_scale=self.default_control_scale if control_scale is None else float(control_scale),
         )
+        return {
+            "zt": zt,
+            "projected_latent": projected_latent,
+            "eps_pred": eps_pred,
+            "control_residuals": control_residuals,
+            "use_control": torch.tensor(use_control, device=zt.device),
+        }
+
+    def forward(
+        self,
+        eeg: torch.Tensor,
+        subject_idx: torch.Tensor,
+        audio: torch.Tensor | None = None,
+        z0: torch.Tensor | None = None,
+        timesteps: torch.Tensor | None = None,
+        noise: torch.Tensor | None = None,
+        control_scale: float | None = None,
+        use_control: bool = True,
+    ) -> dict[str, torch.Tensor | dict[str, object] | None]:
+        if z0 is None:
+            if audio is None:
+                raise ValueError("Either z0 or audio must be provided.")
+            if self.audio_encoder is None:
+                raise RuntimeError("audio_encoder is disabled but audio was provided.")
+            z0 = self.audio_encoder(audio)
+
+        if z0.dim() != 4:
+            raise RuntimeError(f"Expected z0 to be 4D [B,C,H,W], got {tuple(z0.shape)}")
+        if z0.shape[1] != self.latent_channels:
+            raise RuntimeError(f"z0 channels ({z0.shape[1]}) != model latent_channels ({self.latent_channels})")
+        unet_dtype = self.control_unet.dtype
+        z0 = z0.to(dtype=unet_dtype)
+
+        if timesteps is None:
+            timesteps = self.sample_timesteps(batch_size=z0.shape[0], device=z0.device)
+        if timesteps.shape != (z0.shape[0],):
+            raise RuntimeError(f"Expected timesteps {(z0.shape[0],)}, got {tuple(timesteps.shape)}")
+
+        zt, noise = self.q_sample(z0, timesteps=timesteps, noise=noise)
+        pred = self.predict_noise(
+            eeg=eeg,
+            subject_idx=subject_idx,
+            zt=zt,
+            timesteps=timesteps,
+            control_scale=control_scale,
+            use_control=use_control,
+        )
+        eps_pred = pred["eps_pred"]
         loss = F.mse_loss(eps_pred.float(), noise.float())
         return {
             "loss": loss,
             "z0": z0,
-            "zt": zt,
+            "zt": pred["zt"],
             "timesteps": timesteps,
             "noise": noise,
-            "projected_latent": projected_latent,
+            "projected_latent": pred["projected_latent"],
             "eps_pred": eps_pred,
-            "control_residuals": control_residuals,
-            "use_control": torch.tensor(use_control, device=z0.device),
+            "control_residuals": pred["control_residuals"],
+            "use_control": pred["use_control"],
         }

@@ -3,6 +3,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 try:
     import torchaudio
@@ -52,15 +53,17 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
         self.model_id = model_id
         self.sample_rate = sample_rate
         self.device_name = device
+        self.device = torch.device(device)
         self.dtype = dtype
         self.use_mode = use_mode
+        self._full_pipeline = None
 
         # Load the official pipeline, but we only keep the VAE.
         pipe = AudioLDM2Pipeline.from_pretrained(model_id, torch_dtype=dtype)
         self.vae = pipe.vae
 
         if cache_pipeline:
-            # keep only what you need
+            # keep only what you need for encoder-side training by default
             del pipe
 
         self.vae.to(device)
@@ -104,7 +107,7 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
         elif waveform.dim() != 2:
             raise ValueError(f"Expected [B,T] or [B,1,T], got {waveform.shape}")
 
-        waveform = waveform.to(device=self.device_name, dtype=torch.float32)
+        waveform = waveform.to(device=self.device, dtype=torch.float32)
 
         waveform = waveform.clamp(-1.0, 1.0)
 
@@ -115,9 +118,23 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
 
         return mel_db.to(dtype=self.dtype)
 
+    def _load_full_pipeline(self):
+        if AudioLDM2Pipeline is None:
+            raise ImportError("diffusers is required to load the AudioLDM2 full pipeline.")
+        if self._full_pipeline is None:
+            pipe = AudioLDM2Pipeline.from_pretrained(self.model_id, torch_dtype=self.dtype)
+            pipe = pipe.to(self.device)
+            self._full_pipeline = pipe
+        return self._full_pipeline
+
+    @property
+    def vocoder_sample_rate(self) -> int:
+        pipe = self._load_full_pipeline()
+        return int(pipe.vocoder.config.sampling_rate)
+
     @torch.no_grad()
     def infer_latent_shape(self, num_audio_samples: int) -> tuple[int, int, int]:
-        dummy_waveform = torch.zeros(1, int(num_audio_samples), device=self.device_name, dtype=torch.float32)
+        dummy_waveform = torch.zeros(1, int(num_audio_samples), device=self.device, dtype=torch.float32)
         latents = self(dummy_waveform)
         if latents.dim() != 4:
             raise RuntimeError(f"Expected latent tensor [B,C,H,W], got {tuple(latents.shape)}")
@@ -133,7 +150,7 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
         """
         mel: [B, 1, n_mels, n_frames]
         """
-        mel = mel.to(device=self.device_name, dtype=self.dtype)
+        mel = mel.to(device=self.device, dtype=self.dtype)
 
         posterior = self.vae.encode(mel).latent_dist
 
@@ -153,6 +170,77 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
             posterior_mean=mean,
             posterior_logvar=logvar,
         )
+
+    @torch.no_grad()
+    def decode_latents_to_mel(self, latents: torch.Tensor) -> torch.Tensor:
+        latents = latents.to(device=self.device, dtype=self.dtype)
+        # The training path uses checkpoint-derived latent grids in [C, H, W] = [C, 16, 87].
+        # AudioLDM2's official decode path expects the spatial axes swapped back before vocoding.
+        latents_for_decode = latents.transpose(-1, -2)
+        decoded = self.vae.decode(latents_for_decode / self.scaling_factor)
+        mel = decoded.sample if hasattr(decoded, "sample") else decoded
+        if mel.dim() != 4:
+            raise RuntimeError(f"Expected decoded mel [B,1,T,F], got {tuple(mel.shape)}")
+        return mel
+
+    @torch.no_grad()
+    def decode_latents_to_waveform(self, latents: torch.Tensor) -> torch.Tensor:
+        pipe = self._load_full_pipeline()
+        mel = self.decode_latents_to_mel(latents)
+        waveform = pipe.mel_spectrogram_to_waveform(mel)
+        if waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
+        return waveform
+
+    @torch.no_grad()
+    def get_audio_features(
+        self,
+        waveform: torch.Tensor,
+        *,
+        sample_rate: int | None = None,
+        normalize: bool = True,
+    ) -> torch.Tensor:
+        if torchaudio is None:
+            raise ImportError("torchaudio is required for CLAP audio feature extraction.")
+        pipe = self._load_full_pipeline()
+        target_sr = int(pipe.feature_extractor.sampling_rate)
+
+        if waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
+        if waveform.dim() != 2:
+            raise ValueError(f"Expected waveform [B,T], got {tuple(waveform.shape)}")
+
+        audio = waveform.detach().cpu().float()
+        input_sr = self.sample_rate if sample_rate is None else int(sample_rate)
+        if input_sr != target_sr:
+            audio = torchaudio.functional.resample(audio, orig_freq=input_sr, new_freq=target_sr)
+
+        inputs = pipe.feature_extractor(
+            [x.numpy() for x in audio],
+            return_tensors="pt",
+            sampling_rate=target_sr,
+        )
+        input_features = inputs.input_features.to(device=self.device, dtype=pipe.text_encoder.dtype)
+        features = pipe.text_encoder.get_audio_features(input_features=input_features)
+        if normalize:
+            features = F.normalize(features, dim=-1)
+        return features.detach().cpu()
+
+    @torch.no_grad()
+    def compute_audio_similarity(
+        self,
+        waveform_a: torch.Tensor,
+        waveform_b: torch.Tensor,
+        *,
+        sample_rate: int | None = None,
+    ) -> torch.Tensor:
+        feats_a = self.get_audio_features(waveform_a, sample_rate=sample_rate, normalize=True)
+        feats_b = self.get_audio_features(waveform_b, sample_rate=sample_rate, normalize=True)
+        if feats_a.shape != feats_b.shape:
+            raise RuntimeError(
+                f"Audio feature shape mismatch: {tuple(feats_a.shape)} vs {tuple(feats_b.shape)}"
+            )
+        return (feats_a * feats_b).sum(dim=-1)
 
     @torch.no_grad()
     def forward(
