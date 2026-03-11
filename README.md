@@ -90,7 +90,7 @@ Important fields:
 - `model.projector.use_linear_fallback`: fallback only when temporal length does not match latent grid exactly
 - `controlnet.copy_encoder_weights`: must remain `true` for paper-aligned behavior
 - `controlnet.inject_middle_block`: whether to inject ControlNet residuals at the U-Net middle block
-- `train.validation_metric`: `loss` by default; set to `clap` to select checkpoints with generation-based validation
+- `train.validation_metric`: `clap` by default, so checkpoint selection follows generation-based validation
 - `train.validation_num_inference_steps`: denoising steps used for optional validation-by-generation
 
 ## Environment
@@ -123,7 +123,7 @@ Core runtime dependencies include:
 Run the paper-alignment smoke and regression tests:
 
 ```bash
-python -m pytest tests/test_paper_alignment_smoke.py -q
+python -m pytest tests/test_paper_alignment_smoke.py tests/test_generation_pipeline.py tests/test_train_validation_metric.py -q
 ```
 
 Current test coverage includes:
@@ -136,7 +136,7 @@ Current test coverage includes:
 If you want the shortest reproducibility check, run:
 
 ```bash
-python -m pytest tests/test_paper_alignment_smoke.py -q
+python -m pytest tests/test_paper_alignment_smoke.py tests/test_generation_pipeline.py tests/test_train_validation_metric.py -q
 python scripts/train.py --config configs/train.yaml --fold 0 --max-steps 1
 ```
 
@@ -172,9 +172,11 @@ Typical artifacts:
 - `pairwise_report.json`
 - per-condition `result.json`
 - per-condition `model.pt`
-- optional `best_model.pt` when generation-based validation is enabled
+- per-condition `best_model.pt`
 
-`model.pt` now includes the cached fixed-prompt text embeddings via persistent buffers, so loading the checkpoint does not require regenerating them.
+With the current default config, `best_model.pt` is the primary checkpoint because model selection is driven by `val_clap`. `model.pt` is still saved as the last-epoch checkpoint.
+
+`model.pt` and `best_model.pt` both include the cached fixed-prompt text embeddings via persistent buffers, so loading the checkpoint does not require regenerating them.
 
 ## Example Result
 
@@ -197,7 +199,7 @@ Generate decoded audio from a trained checkpoint:
 ```bash
 python scripts/generate.py \
   --config configs/train.yaml \
-  --checkpoint outputs/loso_runs/fold_00/multi_attention/model.pt \
+  --checkpoint outputs/loso_runs/fold_00/multi_attention/best_model.pt \
   --fold 0 \
   --condition multi_attention \
   --split test \
@@ -304,5 +306,6 @@ If you use this repo, cite the original paper first. A basic BibTeX stub:
 - The runtime U-Net is loaded from `diffusers` `AudioLDM2Pipeline`; the vendored AudioLDM subset is no longer the training backbone.
 - The current text conditioning is a cached fixed prompt, not yet per-sample prompt conditioning.
 - Fixed-prompt text embeddings can be cached on disk through `model.unet.text_cache_path` and are also saved inside `model.pt`.
+- The default training config now uses `validation_metric: clap`, so `best_model.pt` is expected after each condition run.
 - On some systems you may see CUDA or joblib warnings during import or tests; the current smoke tests still pass under those warnings.
 - `model.projector.lat_grid` should usually stay `null` unless you intentionally want to override checkpoint-derived shape.
