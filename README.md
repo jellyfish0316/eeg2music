@@ -1,5 +1,4 @@
 
-<img width="467" height="591" alt="EEG2Music drawio" src="https://github.com/user-attachments/assets/6e06a40f-3675-451c-aae2-5e546a6e0ca6" />
 
 # EEG Attention-Guided Music Experiment Framework
 
@@ -20,6 +19,12 @@ The current implementation uses:
 - ControlNet-style encoder copy with zero-initialized residual injection
 - pretrained AudioLDM2 U-Net loaded from `AudioLDM2Pipeline`
 - latent diffusion loss on AudioLDM2 VAE latents
+
+## Model Architecture
+
+<p align="center">
+  <img width="467" height="591" alt="EEG2Music drawio" src="https://github.com/user-attachments/assets/6e06a40f-3675-451c-aae2-5e546a6e0ca6" />
+</p>
 
 ## Overview
 
