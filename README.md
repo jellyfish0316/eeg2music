@@ -20,7 +20,7 @@ The current implementation uses:
 
 ## Overview
 
-This repo is intended to support the proposal's attention-guided EEG-to-music experiments, using *Naturalistic Music Decoding from EEG Data via Latent Diffusion Models* as the backbone reference architecture. It is not positioned as a full end-to-end reproduction of the paper. The implementation is intentionally explicit about which parts are paper-aligned and which proposal-specific pieces still depend on real data.
+This repo is intended to support attention-guided EEG-to-music experiments, using *Naturalistic Music Decoding from EEG Data via Latent Diffusion Models* as the backbone reference architecture.
 
 At a high level, the system:
 
