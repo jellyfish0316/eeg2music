@@ -1,3 +1,6 @@
+
+<img width="467" height="591" alt="EEG2Music drawio" src="https://github.com/user-attachments/assets/6e06a40f-3675-451c-aae2-5e546a6e0ca6" />
+
 # EEG Attention-Guided Music Experiment Framework
 
 Proposal-driven EEG-to-music experiment framework built on pretrained `AudioLDM2-music`.
