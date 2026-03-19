@@ -57,7 +57,7 @@ def main() -> None:
 
     per_sample = []
     by_condition: dict[str, list[float]] = {}
-    by_pair_key: dict[tuple[int, int, int], dict[str, float]] = {}
+    by_pair_key: dict[tuple[int, int, int, int], dict[str, float]] = {}
     for row in rows:
         pred_audio, pred_sr = sf.read(row["generated_wav"])
         target_audio, target_sr = sf.read(row["target_wav"])
@@ -76,7 +76,12 @@ def main() -> None:
         item["target_sample_rate"] = int(target_sr)
         per_sample.append(item)
         by_condition.setdefault(str(row["condition_name"]), []).append(score)
-        pair_key = (int(row["fold_index"]), int(row["subject_idx"]), int(row["chunk_idx"]))
+        pair_key = (
+            int(row["fold_index"]),
+            int(row.get("song_idx", 0)),
+            int(row["subject_idx"]),
+            int(row["chunk_idx"]),
+        )
         by_pair_key.setdefault(pair_key, {})[str(row["condition_name"])] = score
 
     condition_summary = {
@@ -93,8 +98,9 @@ def main() -> None:
             pairwise.append(
                 {
                     "fold_index": key[0],
-                    "subject_idx": key[1],
-                    "chunk_idx": key[2],
+                    "song_idx": key[1],
+                    "subject_idx": key[2],
+                    "chunk_idx": key[3],
                     "multi_attention": float(values["multi_attention"]),
                     "passive_x3": float(values["passive_x3"]),
                     "delta_multi_minus_passive": float(values["multi_attention"] - values["passive_x3"]),
