@@ -90,6 +90,9 @@ def derive_latent_grid(
     configured = projector_cfg.get("lat_grid")
     if configured is not None:
         return tuple(int(v) for v in configured)
+    dataset_latent_shape = getattr(dataset, "latent_shape", None)
+    if dataset_latent_shape is not None:
+        return tuple(int(v) for v in dataset_latent_shape)
     if dataset.z0_by_chunk is not None:
         return tuple(int(v) for v in dataset.z0_by_chunk.shape[1:])
 
@@ -151,6 +154,7 @@ def build_dataloader(
         audio_path=data_cfg.get("audio_path", "data/songs/song21_16k.wav"),
         data_key=data_cfg.get("data_key", "data21"),
         condition_sources=data_cfg.get("condition_sources", None),
+        songs=data_cfg.get("songs"),
         chunk_sec=float(data_cfg["chunk_sec"]),
         eeg_fs=int(data_cfg["eeg_fs"]),
         audio_fs=int(data_cfg["audio_fs"]),
@@ -183,7 +187,10 @@ def build_model_from_dataset(
 
     use_precomputed_latents = bool(latent_cfg.get("enabled", False))
     latent_channels = latent_cfg.get("latent_channels")
-    if latent_channels is None and dataset.z0_by_chunk is not None:
+    dataset_latent_shape = getattr(dataset, "latent_shape", None)
+    if latent_channels is None and dataset_latent_shape is not None:
+        latent_channels = int(dataset_latent_shape[0])
+    elif latent_channels is None and dataset.z0_by_chunk is not None:
         latent_channels = int(dataset.z0_by_chunk.shape[1])
     latent_grid = derive_latent_grid(cfg, dataset=dataset, device=device)
 

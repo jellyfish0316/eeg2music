@@ -126,7 +126,11 @@ def main() -> None:
         for i in range(predicted_audio.shape[0]):
             subj = int(batch["subject_idx"][i].item())
             chunk = int(batch["chunk_idx"][i].item())
-            names.append(f"fold{args.fold:02d}_{args.condition}_{args.split}_subj{subj:02d}_chunk{chunk:04d}.wav")
+            song_idx = int(batch["song_idx"][i].item()) if "song_idx" in batch else 0
+            song_name = batch["song_name"][i] if "song_name" in batch else "song"
+            names.append(
+                f"fold{args.fold:02d}_{args.condition}_{args.split}_{song_name}_song{song_idx:02d}_subj{subj:02d}_chunk{chunk:04d}.wav"
+            )
 
         generated_paths = save_waveforms(
             predicted_audio,
@@ -147,6 +151,8 @@ def main() -> None:
                     "fold_index": int(args.fold),
                     "condition_name": args.condition,
                     "split": args.split,
+                    "song_idx": int(batch["song_idx"][i].item()) if "song_idx" in batch else 0,
+                    "song_name": batch["song_name"][i] if "song_name" in batch else "song",
                     "subject_idx": int(batch["subject_idx"][i].item()),
                     "chunk_idx": int(batch["chunk_idx"][i].item()),
                     "generated_wav": generated_paths[i],
