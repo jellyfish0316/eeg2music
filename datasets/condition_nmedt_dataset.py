@@ -266,6 +266,7 @@ class ConditionNMEDTDataset(Dataset):
         if not latent_path.exists():
             raise FileNotFoundError(f"precomputed_latents_path not found: {latent_path}")
         payload = torch.load(latent_path, map_location="cpu")
+        expected_song_names = [record.name for record in self.song_records]
 
         if torch.is_tensor(payload):
             self._set_single_song_latents(payload)
@@ -287,7 +288,26 @@ class ConditionNMEDTDataset(Dataset):
             raise KeyError("Expected latent cache to contain z0_by_chunk, latents, z0_by_song, or latents_by_song.")
 
         if len(self.song_records) != len(per_song):
-            raise ValueError(f"Latent cache songs {len(per_song)} != dataset songs {len(self.song_records)}")
+            cache_song_names: list[str] = []
+            meta = payload.get("meta")
+            if isinstance(meta, dict):
+                meta_songs = meta.get("songs")
+                if isinstance(meta_songs, list):
+                    for song_meta in meta_songs:
+                        if isinstance(song_meta, dict) and "name" in song_meta:
+                            cache_song_names.append(str(song_meta["name"]))
+            details = [
+                f"Latent cache songs {len(per_song)} != dataset songs {len(self.song_records)}.",
+                f"cache={latent_path}",
+                f"dataset_song_names={expected_song_names}",
+            ]
+            if cache_song_names:
+                details.append(f"cache_song_names={cache_song_names}")
+            details.append(
+                "Re-run scripts/precompute_latents.py with the current multi-song config, "
+                "or set latent_cache.enabled=false to encode audio on the fly."
+            )
+            raise ValueError(" ".join(details))
 
         self.z0_by_song = []
         for song_idx, (record, latents) in enumerate(zip(self.song_records, per_song)):
