@@ -1,6 +1,0 @@
-name: eeg
-channels:
-  - defaults
-dependencies:
-  - python=3.10
-prefix: /home/bryan/miniconda3/envs/eeg

@@ -164,13 +164,16 @@ class ConditionNMEDTDataset(Dataset):
             for idx, song in enumerate(songs):
                 if "audio_path" not in song:
                     raise KeyError(f"data.songs[{idx}] is missing 'audio_path'")
+                per_song_condition_sources = song.get("condition_sources")
+                if per_song_condition_sources is None and "mat_path" not in song:
+                    per_song_condition_sources = condition_sources
                 normalized.append(
                     {
                         "name": str(song.get("name", f"song_{idx:02d}")),
                         "mat_path": song.get("mat_path", mat_path),
                         "audio_path": song["audio_path"],
                         "data_key": song.get("data_key", data_key),
-                        "condition_sources": song.get("condition_sources", condition_sources),
+                        "condition_sources": per_song_condition_sources,
                     }
                 )
             return normalized
