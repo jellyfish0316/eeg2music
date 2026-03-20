@@ -58,21 +58,24 @@ data:
       audio_path: data/songs/song30_16k.wav
       data_key: data30
 
+  # Leave condition_sources unset for now so each song falls back to its own
+  # mat_path/data_key. We can wire condition-specific sources later.
+  condition_sources: null
   # Condition-specific EEG sources; replace with your own files/keys.
-  condition_sources:
-    passive:
-      mat_path: data/EEG/song21_Imputed.mat
-      data_key: data21
-    drum:
-      mat_path: data/EEG/song21_Imputed.mat
-      data_key: data21
-    guitar:
-      mat_path: data/EEG/song21_Imputed.mat
-      data_key: data21
-    vocal:
-      mat_path: data/EEG/song21_Imputed.mat
-      data_key: data21
-
+  # condition_sources:
+  #   passive:
+  #     mat_path: data/EEG/song21_Imputed.mat
+  #     data_key: data21
+  #   drum:
+  #     mat_path: data/EEG/song21_Imputed.mat
+  #     data_key: data21
+  #   guitar:
+  #     mat_path: data/EEG/song21_Imputed.mat
+  #     data_key: data21
+  #   vocal:
+  #     mat_path: data/EEG/song21_Imputed.mat
+  #     data_key: data21
+  
   eeg_time: 437
   audio_samples: 56000
   chunk_sec: 3.5
@@ -119,7 +122,7 @@ controlnet:
 
 latent_cache:
   enabled: true
-  path: data/precomputed/song21_audioldm2_latents.pt
+  path: data/precomputed/nmedt_multisong_audioldm2_latents.pt
   latent_channels: 8
   precompute_batch_size: 16
   precompute_use_mode: true
