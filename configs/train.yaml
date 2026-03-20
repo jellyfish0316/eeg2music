@@ -15,58 +15,48 @@ data:
 
   # Optional multi-song mode for paper-style validation across NMED-T.
   # Keep this null for the current single-song fallback mode.
-  songs:
-    - name: song21_a
-      mat_path: data/EEG/song21_Imputed.mat
-      audio_path: data/songs/song21_16k.wav
-      data_key: data21
-    - name: song21_b
-      mat_path: data/EEG/song21_Imputed.mat
-      audio_path: data/songs/song21_16k.wav
-      data_key: data21
 
-  # Example:
-  # songs:
-  #   - name: song21
-  #     mat_path: data/EEG/song21_Imputed.mat
-  #     audio_path: data/songs/song21_16k.wav
-  #     data_key: data21
-  #   - name: song22
-  #     mat_path: data/EEG/song22_Imputed.mat
-  #     audio_path: data/songs/song22_16k.wav
-  #     data_key: data22
-  #   - name: song23
-  #     mat_path: data/EEG/song23_Imputed.mat
-  #     audio_path: data/songs/song23_16k.wav
-  #     data_key: data23
-  #   - name: song24
-  #     mat_path: data/EEG/song24_Imputed.mat
-  #     audio_path: data/songs/song24_16k.wav
-  #     data_key: data24
-  #   - name: song25
-  #     mat_path: data/EEG/song25_Imputed.mat
-  #     audio_path: data/songs/song25_16k.wav
-  #     data_key: data25
-  #   - name: song26
-  #     mat_path: data/EEG/song26_Imputed.mat
-  #     audio_path: data/songs/song26_16k.wav
-  #     data_key: data26
-  #   - name: song27
-  #     mat_path: data/EEG/song27_Imputed.mat
-  #     audio_path: data/songs/song27_16k.wav
-  #     data_key: data27
-  #   - name: song28
-  #     mat_path: data/EEG/song28_Imputed.mat
-  #     audio_path: data/songs/song28_16k.wav
-  #     data_key: data28
-  #   - name: song29
-  #     mat_path: data/EEG/song29_Imputed.mat
-  #     audio_path: data/songs/song29_16k.wav
-  #     data_key: data29
-  #   - name: song30
-  #     mat_path: data/EEG/song30_Imputed.mat
-  #     audio_path: data/songs/song30_16k.wav
-  #     data_key: data30
+  songs:
+    - name: song21
+      mat_path: data/EEG/song21_Imputed.mat
+      audio_path: data/songs/song21_16k.wav
+      data_key: data21
+    - name: song22
+      mat_path: data/EEG/song22_Imputed.mat
+      audio_path: data/songs/song22_16k.wav
+      data_key: data22
+    - name: song23
+      mat_path: data/EEG/song23_Imputed.mat
+      audio_path: data/songs/song23_16k.wav
+      data_key: data23
+    - name: song24
+      mat_path: data/EEG/song24_Imputed.mat
+      audio_path: data/songs/song24_16k.wav
+      data_key: data24
+    - name: song25
+      mat_path: data/EEG/song25_Imputed.mat
+      audio_path: data/songs/song25_16k.wav
+      data_key: data25
+    - name: song26
+      mat_path: data/EEG/song26_Imputed.mat
+      audio_path: data/songs/song26_16k.wav
+      data_key: data26
+    - name: song27
+      mat_path: data/EEG/song27_Imputed.mat
+      audio_path: data/songs/song27_16k.wav
+      data_key: data27
+    - name: song28
+      mat_path: data/EEG/song28_Imputed.mat
+      audio_path: data/songs/song28_16k.wav
+      data_key: data28
+    - name: song29
+      mat_path: data/EEG/song29_Imputed.mat
+      audio_path: data/songs/song29_16k.wav
+      data_key: data29
+    - name: song30
+      mat_path: data/EEG/song30_Imputed.mat
+      audio_path: data/songs/song30_16k.wav
+      data_key: data30
 
   # Condition-specific EEG sources; replace with your own files/keys.
   condition_sources:
