@@ -139,6 +139,7 @@ split:
 
 train:
   device: cuda
+  model_dtype: float32
   lr: 0.00005
   epochs: 8
   grad_clip: 1.0
@@ -150,4 +151,3 @@ train:
   run_mode: single_fold
   output_root: outputs/loso_runs_lr5e5_ep8
   checkpoint_name: model.pt
-

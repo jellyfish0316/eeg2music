@@ -179,11 +179,33 @@ def build_model_from_dataset(
     dataset: ConditionNMEDTDataset,
     device: torch.device,
 ) -> EEGControlNetModel:
+    def resolve_model_dtype(value: object | None) -> torch.dtype:
+        if value is None:
+            return torch.float16 if device.type == "cuda" else torch.float32
+        text = str(value).strip().lower()
+        mapping = {
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "half": torch.float16,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+            "full": torch.float32,
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+        }
+        if text not in mapping:
+            raise ValueError(
+                f"Unsupported train.model_dtype={value!r}. "
+                "Use one of: float16, float32, bfloat16."
+            )
+        return mapping[text]
+
     data_cfg = cfg["data"]
     model_cfg = cfg["model"]
     audio_cfg = cfg.get("audio_encoder", {})
     latent_cfg = cfg.get("latent_cache", {})
     control_cfg = cfg.get("controlnet", {})
+    train_cfg = cfg.get("train", {})
 
     use_precomputed_latents = bool(latent_cfg.get("enabled", False))
     latent_channels = latent_cfg.get("latent_channels")
@@ -197,6 +219,7 @@ def build_model_from_dataset(
     model = EEGControlNetModel(
         eeg_channels=int(dataset.eeg_out_channels),
         num_subjects=int(dataset.total_subjects),
+        model_dtype=resolve_model_dtype(train_cfg.get("model_dtype")),
         use_subject_adapter=bool(model_cfg.get("use_subject_adapter", True)),
         subject_emb_dim=int(model_cfg.get("subject_emb_dim", 64)),
         device=device,
@@ -231,6 +254,7 @@ def build_model_from_dataset(
             dtype=torch.float32,
         )
         model.projector(dummy_eeg)
+    print(f"training_model_dtype={str(model.model_dtype).replace('torch.', '')}", flush=True)
     return model
 
 

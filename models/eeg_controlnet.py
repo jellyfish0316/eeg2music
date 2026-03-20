@@ -17,6 +17,7 @@ class EEGControlNetModel(nn.Module):
         eeg_channels: int,
         num_subjects: int,
         device: torch.device | str | None = None,
+        model_dtype: torch.dtype | None = None,
         use_subject_adapter: bool = True,
         subject_emb_dim: int = 64,
         audio_model_id: str = "cvssp/audioldm2-music",
@@ -45,6 +46,9 @@ class EEGControlNetModel(nn.Module):
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         device = torch.device(device)
+        if model_dtype is None:
+            model_dtype = torch.float16 if device.type == "cuda" else torch.float32
+        self.model_dtype = model_dtype
 
         self.use_subject_adapter = bool(use_subject_adapter)
         if self.use_subject_adapter:
@@ -61,7 +65,7 @@ class EEGControlNetModel(nn.Module):
                 model_id=audio_model_id,
                 sample_rate=audio_sample_rate,
                 device=str(device),
-                dtype=torch.float16 if device.type == "cuda" else torch.float32,
+                dtype=self.model_dtype,
                 freeze_vae=audio_freeze_vae,
                 use_mode=audio_use_mode,
             )
@@ -98,7 +102,7 @@ class EEGControlNetModel(nn.Module):
         self.control_unet = AudioLDMUNetWrapper(
             model_id=audio_model_id,
             device=device,
-            dtype=torch.float16 if device.type == "cuda" else torch.float32,
+            dtype=self.model_dtype,
             cache_pipeline=bool(unet_cache_pipeline),
             text_prompt=text_prompt,
             text_cache_path=text_cache_path,
