@@ -2,7 +2,7 @@ seed: 42
 
 experiment:
   active_instruments: [drum, guitar, vocal]
-  conditions: [multi_attention, passive_x3]
+  conditions: [passive_x3]
   seed: 42
   num_folds: 10
   fold_index: 0
@@ -139,14 +139,15 @@ split:
 
 train:
   device: cuda
-  lr: 0.0001
-  epochs: 1
+  lr: 0.00005
+  epochs: 8
   grad_clip: 1.0
   log_every: 10
   validation_metric: clap
-  validation_num_inference_steps: 5
-  validation_generate_batches: 1
+  validation_num_inference_steps: 25
+  validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
   run_mode: single_fold
-  output_root: outputs/loso_runs
+  output_root: outputs/loso_runs_lr5e5_ep8
   checkpoint_name: model.pt
+
