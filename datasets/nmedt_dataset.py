@@ -10,6 +10,11 @@ import librosa
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+from datasets.eeg_preprocessing import (
+    apply_chunk_level_eeg_preprocessing,
+    apply_source_level_eeg_preprocessing,
+)
+
 
 class NMEDTDataset(Dataset):
     def __init__(
@@ -44,7 +49,10 @@ class NMEDTDataset(Dataset):
             raise KeyError(f"'{data_key}' not found in mat file. Available keys: {list(mat.keys())}")
 
         data = mat[data_key]  # expected shape: (channels, time, subjects)
-        self.data = data.astype(np.float32)
+        self.data = apply_source_level_eeg_preprocessing(
+            data.astype(np.float32),
+            self.eeg_preprocessing,
+        )
 
         if self.data.ndim != 3:
             raise ValueError(
@@ -144,10 +152,11 @@ class NMEDTDataset(Dataset):
         # Audio: [L]
         audio = self.audio[audio_start:audio_end].copy()
 
-        if self.normalize_eeg:
-            mean = eeg.mean(axis=1, keepdims=True)
-            std = eeg.std(axis=1, keepdims=True) + 1e-8
-            eeg = (eeg - mean) / std
+        eeg = apply_chunk_level_eeg_preprocessing(
+            eeg,
+            self.eeg_preprocessing,
+            fallback_normalize=self.normalize_eeg,
+        )
 
         if self.normalize_audio:
             max_abs = np.max(np.abs(audio)) + 1e-8

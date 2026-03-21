@@ -11,6 +11,11 @@ import soundfile as sf
 import torch
 from torch.utils.data import Dataset
 
+from datasets.eeg_preprocessing import (
+    apply_chunk_level_eeg_preprocessing,
+    apply_source_level_eeg_preprocessing,
+)
+
 
 @dataclass
 class EEGSource:
@@ -42,6 +47,7 @@ def _load_eeg_source(
     name: str,
     mat_path: str,
     data_key: str,
+    preprocessing: dict[str, Any] | None = None,
 ) -> EEGSource:
     mat = scipy.io.loadmat(mat_path)
     if data_key not in mat:
@@ -49,6 +55,7 @@ def _load_eeg_source(
     arr = mat[data_key].astype(np.float32)
     if arr.ndim != 3:
         raise ValueError(f"{name}: expected EEG shape [C,T,S], got {arr.shape}")
+    arr = apply_source_level_eeg_preprocessing(arr, preprocessing)
     return EEGSource(name=name, data=arr)
 
 
@@ -219,7 +226,12 @@ class ConditionNMEDTDataset(Dataset):
                 k = source_spec.get("data_key", data_key)
                 key = (str(p), str(k))
                 if key not in global_cache:
-                    global_cache[key] = _load_eeg_source(name=name, mat_path=str(p), data_key=str(k))
+                    global_cache[key] = _load_eeg_source(
+                        name=name,
+                        mat_path=str(p),
+                        data_key=str(k),
+                        preprocessing=self.eeg_preprocessing,
+                    )
                 sources[name] = global_cache[key]
 
             first = sources[required_sources[0]]
@@ -383,10 +395,11 @@ class ConditionNMEDTDataset(Dataset):
         a_ed = a_st + self.audio_chunk_len
         audio = song.audio[a_st:a_ed].copy()
 
-        if self.normalize_eeg:
-            mean = eeg.mean(axis=1, keepdims=True)
-            std = eeg.std(axis=1, keepdims=True) + 1e-8
-            eeg = (eeg - mean) / std
+        eeg = apply_chunk_level_eeg_preprocessing(
+            eeg,
+            self.eeg_preprocessing,
+            fallback_normalize=self.normalize_eeg,
+        )
         if self.normalize_audio:
             max_abs = np.max(np.abs(audio)) + 1e-8
             audio = audio / max_abs
