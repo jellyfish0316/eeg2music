@@ -81,7 +81,7 @@ def _official_decode_stats(wrapper: AudioLDM2MusicEncoderWrapper) -> dict[str, f
         int(pipe.unet.config.sample_size),
         int(pipe.unet.config.sample_size) // 16,
     )
-    latents = torch.randn(shape, device=wrapper.device, dtype=torch.float32)
+    latents = torch.randn(shape, device=wrapper.device, dtype=wrapper.dtype)
     latents = latents * float(pipe.scheduler.init_noise_sigma)
     mel = pipe.vae.decode(latents / float(pipe.vae.config.scaling_factor)).sample
     return {
