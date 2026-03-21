@@ -76,15 +76,21 @@ def main() -> None:
     source = torch.tensor(audio[start:stop], dtype=torch.float32, device=device).unsqueeze(0)
     latents = wrapper(source)
     reconstructed = wrapper.decode_latents_to_waveform(latents)[0].detach().cpu().float().numpy()
+    mel_transposed = wrapper.decode_latents_to_mel(latents)
 
     pipe = wrapper._load_full_pipeline()
     latents_direct = latents.to(device=wrapper.device, dtype=wrapper.dtype)
     decoded_direct = wrapper.vae.decode(latents_direct / wrapper.scaling_factor)
     mel_direct = decoded_direct.sample if hasattr(decoded_direct, "sample") else decoded_direct
-    waveform_direct = pipe.mel_spectrogram_to_waveform(mel_direct)
-    if waveform_direct.dim() == 1:
-        waveform_direct = waveform_direct.unsqueeze(0)
-    reconstructed_direct = waveform_direct[0].detach().cpu().float().numpy()
+    reconstructed_direct = None
+    direct_error = None
+    try:
+        waveform_direct = pipe.mel_spectrogram_to_waveform(mel_direct)
+        if waveform_direct.dim() == 1:
+            waveform_direct = waveform_direct.unsqueeze(0)
+        reconstructed_direct = waveform_direct[0].detach().cpu().float().numpy()
+    except Exception as exc:
+        direct_error = f"{type(exc).__name__}: {exc}"
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -93,7 +99,8 @@ def main() -> None:
     recon_direct_path = output_dir / "roundtrip_direct.wav"
     sf.write(source_path, source[start:stop].detach().cpu().numpy()[0], sample_rate)
     sf.write(recon_path, reconstructed, wrapper.vocoder_sample_rate)
-    sf.write(recon_direct_path, reconstructed_direct, wrapper.vocoder_sample_rate)
+    if reconstructed_direct is not None:
+        sf.write(recon_direct_path, reconstructed_direct, wrapper.vocoder_sample_rate)
 
     manifest = {
         "meta": {
@@ -109,9 +116,14 @@ def main() -> None:
         "files": {
             "source_wav": str(source_path),
             "roundtrip_transposed_wav": str(recon_path),
-            "roundtrip_direct_wav": str(recon_direct_path),
+            "roundtrip_direct_wav": None if reconstructed_direct is None else str(recon_direct_path),
         },
         "latent_shape": list(latents.shape),
+        "mel_shapes": {
+            "transposed": list(mel_transposed.shape),
+            "direct": list(mel_direct.shape),
+        },
+        "direct_decode_error": direct_error,
     }
     manifest_path = output_dir / "manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -119,7 +131,12 @@ def main() -> None:
 
     print(f"saved source: {source_path}", flush=True)
     print(f"saved roundtrip_transposed: {recon_path}", flush=True)
-    print(f"saved roundtrip_direct: {recon_direct_path}", flush=True)
+    if reconstructed_direct is not None:
+        print(f"saved roundtrip_direct: {recon_direct_path}", flush=True)
+    else:
+        print(f"roundtrip_direct failed: {direct_error}", flush=True)
+    print(f"mel shape transposed: {tuple(mel_transposed.shape)}", flush=True)
+    print(f"mel shape direct: {tuple(mel_direct.shape)}", flush=True)
     print(f"saved manifest: {manifest_path}", flush=True)
 
 
