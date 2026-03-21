@@ -28,6 +28,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-inference-steps", type=int, default=50)
     p.add_argument("--max-batches", type=int, default=None)
     p.add_argument("--output-dir", type=str, default="outputs/generated_audio")
+    p.add_argument(
+        "--eeg-mode",
+        type=str,
+        choices=["real", "zero", "random"],
+        default="real",
+        help="Use real EEG, all-zero EEG, or randomly permuted EEG within the batch.",
+    )
+    p.add_argument(
+        "--disable-control",
+        action="store_true",
+        help="Disable ControlNet conditioning during generation, even if enabled in config.",
+    )
     return p.parse_args()
 
 
@@ -110,13 +122,22 @@ def main() -> None:
             break
 
         eeg = batch["eeg"].to(device)
+        if args.eeg_mode == "zero":
+            eeg = torch.zeros_like(eeg)
+        elif args.eeg_mode == "random":
+            if eeg.shape[0] > 1:
+                perm = torch.randperm(eeg.shape[0], device=eeg.device)
+                eeg = eeg[perm]
+            else:
+                eeg = torch.randn_like(eeg)
         subject_idx = batch["subject_idx"].to(device)
+        use_control = bool(cfg.get("controlnet", {}).get("enabled", False)) and not bool(args.disable_control)
         pred_latents = generate_latents(
             model,
             eeg=eeg,
             subject_idx=subject_idx,
             num_inference_steps=int(args.num_inference_steps),
-            use_control=bool(cfg.get("controlnet", {}).get("enabled", False)),
+            use_control=use_control,
             control_scale=float(cfg.get("controlnet", {}).get("control_scale", 1.0)),
         )
         predicted_audio = decoder.decode_latents_to_waveform(pred_latents)
@@ -162,6 +183,8 @@ def main() -> None:
                     "audio_sample_rate": int(data_cfg["audio_fs"]),
                     "generated_sample_rate": int(decoder.vocoder_sample_rate),
                     "num_inference_steps": int(args.num_inference_steps),
+                    "eeg_mode": args.eeg_mode,
+                    "use_control": bool(use_control),
                 }
             )
 
@@ -173,6 +196,8 @@ def main() -> None:
             "condition_name": args.condition,
             "split": args.split,
             "num_inference_steps": int(args.num_inference_steps),
+            "eeg_mode": args.eeg_mode,
+            "use_control": bool(not args.disable_control and cfg.get("controlnet", {}).get("enabled", False)),
             "num_rows": len(manifest_rows),
         },
         "samples": manifest_rows,
