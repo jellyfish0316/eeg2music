@@ -71,6 +71,7 @@ Because of that, proposal assumptions may differ from the original paper in subj
 - [scripts/precompute_latents.py](/home/bryan/eeg/scripts/precompute_latents.py): precompute AudioLDM2 latents
 - [scripts/generate.py](/home/bryan/eeg/scripts/generate.py): decode EEG-conditioned latents into `.wav` files
 - [scripts/evaluate_generation.py](/home/bryan/eeg/scripts/evaluate_generation.py): CLAP audio-similarity evaluation over generated vs target audio
+- [scripts/prepare_nmedt_raw.py](/home/bryan/eeg/scripts/prepare_nmedt_raw.py): inspect raw NMED-T MATLAB v7.3 files and convert them into song-level `.mat` files
 - [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py): main model
 - [models/eeg_projector.py](/home/bryan/eeg/models/eeg_projector.py): paper-style EEG projector
 - [models/audioldm_control_branch.py](/home/bryan/eeg/models/audioldm_control_branch.py): ControlNet adapter branch
@@ -96,6 +97,47 @@ Default EEG preprocessing is intentionally minimal:
 - no band-pass
 - no ICA
 - raw time-series input
+
+## Raw NMED-T Conversion
+
+The current training code does not consume participant-level raw recordings such as
+`02_1_raw.mat` directly. It expects song-level MATLAB v5 files shaped as
+`[channels, time, subjects]`, for example `song21_Imputed.mat` with key `data21`.
+
+If your dataset folder currently contains raw MATLAB v7.3 recordings, use
+[prepare_nmedt_raw.py](/home/bryan/eeg/scripts/prepare_nmedt_raw.py) in two steps:
+
+1. inspect the raw file to discover available keys / shapes
+2. convert recordings into song-level outputs compatible with the existing dataset code
+
+Inspect example:
+
+```bash
+python scripts/prepare_nmedt_raw.py inspect \
+  --file data/EEG/02_1_raw.mat
+```
+
+Convert example:
+
+```bash
+python scripts/prepare_nmedt_raw.py convert \
+  --raw-dir data/EEG \
+  --output-dir data/EEG_processed \
+  --eeg-key eeg \
+  --recording-song-map '{"02_1_raw.mat":["song21","song22"],"02_2_raw.mat":["song23","song24"]}' \
+  --src-fs 1000 \
+  --dst-fs 125 \
+  --seconds-per-song 210 \
+  --robust-scale \
+  --clamp-std 20
+```
+
+Before running `convert`, confirm:
+
+- the real raw EEG key from `inspect`
+- raw sampling rate
+- which songs belong to each recording file
+- whether songs are contiguous blocks or need trigger-based cutting
 
 ## Config Notes
 
