@@ -118,7 +118,7 @@ controlnet:
 
 latent_cache:
   enabled: true
-  path: data/precomputed/nmedt_multisong_audioldm2_latents.pt
+  path: data/precomputed/nmedt_multisong_audioldm2_latents_logmel_v2.pt
   latent_channels: 8
   precompute_batch_size: 16
   precompute_use_mode: true
@@ -145,5 +145,5 @@ train:
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
   run_mode: single_fold
-  output_root: outputs/loso_runs_lr1e4_ep8_raw
+  output_root: outputs/loso_runs_lr1e4_ep8_raw_logmel_v2
   checkpoint_name: model.pt
