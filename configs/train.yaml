@@ -85,7 +85,11 @@ data:
   num_workers: 0
   text_prompt: "Pop music"
   eeg_preprocessing:
-    per_channel_normalization: true
+    drop_face_channels: true
+    keep_first_n_channels: 124
+    center_using_first_samples: 1000
+    std_clamp: 20.0
+    per_channel_normalization: false
     band_pass: false
     ica: false
     representation: raw_time_series
