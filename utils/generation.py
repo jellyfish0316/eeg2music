@@ -50,6 +50,9 @@ def generate_latents(
         dtype=model.control_unet.dtype,
         generator=generator,
     )
+    init_noise_sigma = getattr(scheduler, "init_noise_sigma", None)
+    if init_noise_sigma is not None:
+        latents = latents * float(init_noise_sigma)
 
     extra_step_kwargs = {}
     pipe = getattr(model.control_unet, "pipeline", None)
