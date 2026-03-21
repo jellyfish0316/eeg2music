@@ -9,7 +9,7 @@ experiment:
 
 data:
   # Default fallback source (used when condition_sources missing keys)
-  mat_path: data/EEG/song21_Imputed.mat
+  mat_path: data/EEG_processed/song21_Processed.mat
   audio_path: data/songs/song21_16k.wav
   data_key: data21
 
@@ -18,43 +18,43 @@ data:
 
   songs:
     - name: song21
-      mat_path: data/EEG/song21_Imputed.mat
+      mat_path: data/EEG_processed/song21_Processed.mat
       audio_path: data/songs/song21_16k.wav
       data_key: data21
     - name: song22
-      mat_path: data/EEG/song22_Imputed.mat
+      mat_path: data/EEG_processed/song22_Processed.mat
       audio_path: data/songs/song22_16k.wav
       data_key: data22
     - name: song23
-      mat_path: data/EEG/song23_Imputed.mat
+      mat_path: data/EEG_processed/song23_Processed.mat
       audio_path: data/songs/song23_16k.wav
       data_key: data23
     - name: song24
-      mat_path: data/EEG/song24_Imputed.mat
+      mat_path: data/EEG_processed/song24_Processed.mat
       audio_path: data/songs/song24_16k.wav
       data_key: data24
     - name: song25
-      mat_path: data/EEG/song25_Imputed.mat
+      mat_path: data/EEG_processed/song25_Processed.mat
       audio_path: data/songs/song25_16k.wav
       data_key: data25
     - name: song26
-      mat_path: data/EEG/song26_Imputed.mat
+      mat_path: data/EEG_processed/song26_Processed.mat
       audio_path: data/songs/song26_16k.wav
       data_key: data26
     - name: song27
-      mat_path: data/EEG/song27_Imputed.mat
+      mat_path: data/EEG_processed/song27_Processed.mat
       audio_path: data/songs/song27_16k.wav
       data_key: data27
     - name: song28
-      mat_path: data/EEG/song28_Imputed.mat
+      mat_path: data/EEG_processed/song28_Processed.mat
       audio_path: data/songs/song28_16k.wav
       data_key: data28
     - name: song29
-      mat_path: data/EEG/song29_Imputed.mat
+      mat_path: data/EEG_processed/song29_Processed.mat
       audio_path: data/songs/song29_16k.wav
       data_key: data29
     - name: song30
-      mat_path: data/EEG/song30_Imputed.mat
+      mat_path: data/EEG_processed/song30_Processed.mat
       audio_path: data/songs/song30_16k.wav
       data_key: data30
 
@@ -84,15 +84,7 @@ data:
   batch_size: 12
   num_workers: 4
   text_prompt: "Pop music"
-  eeg_preprocessing:
-    drop_face_channels: true
-    keep_first_n_channels: 124
-    center_using_first_samples: 1000
-    std_clamp: 20.0
-    per_channel_normalization: false
-    band_pass: false
-    ica: false
-    representation: raw_time_series
+
 
 model:
   use_subject_adapter: true
@@ -153,5 +145,5 @@ train:
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
   run_mode: single_fold
-  output_root: outputs/loso_runs_lr1e4_ep8
+  output_root: outputs/loso_runs_lr1e4_ep8_raw
   checkpoint_name: model.pt

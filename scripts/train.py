@@ -159,9 +159,9 @@ def build_dataloader(
         eeg_fs=int(data_cfg["eeg_fs"]),
         audio_fs=int(data_cfg["audio_fs"]),
         subjects=subjects,
-        normalize_eeg=bool(data_cfg.get("eeg_preprocessing", {}).get("per_channel_normalization", True)),
+        normalize_eeg=False,
         text_prompt=str(data_cfg.get("text_prompt", "Pop music")),
-        eeg_preprocessing=data_cfg.get("eeg_preprocessing", None),
+        eeg_preprocessing=None,
         precomputed_latents_path=latent_cfg.get("path") if use_precomputed_latents else None,
     )
     loader = DataLoader(

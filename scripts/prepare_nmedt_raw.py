@@ -260,6 +260,15 @@ def _std_clamp(signal, clamp_std: float, np):
     return np.clip(signal, -limit, limit)
 
 
+def _robust_scale(signal, np):
+    median = np.median(signal, axis=1, keepdims=True)
+    q75 = np.percentile(signal, 75.0, axis=1, keepdims=True)
+    q25 = np.percentile(signal, 25.0, axis=1, keepdims=True)
+    iqr = q75 - q25
+    iqr = np.where(iqr < 1e-6, 1.0, iqr)
+    return ((signal - median) / iqr).astype(np.float32, copy=False)
+
+
 def _downsample_linear(signal, src_fs: int, dst_fs: int, np):
     if src_fs == dst_fs:
         return signal.astype(np.float32, copy=False)
@@ -386,6 +395,7 @@ def convert_recordings(
     keep_eeg_channels: int = 124,
     output_suffix: str = "Processed",
     center_using_first_samples: int = 1000,
+    robust_scale: bool = False,
 ) -> None:
     _, np, savemat = _import_or_exit()
 
@@ -449,6 +459,8 @@ def convert_recordings(
                         f"{recording_path.name} {song_name} slice [{start}:{stop}] is outside EEG length {eeg.shape[1]}."
                     )
                 song_signal = eeg[:, start:stop]
+                if robust_scale:
+                    song_signal = _robust_scale(song_signal, np)
                 song_signal = _center_using_first_samples(song_signal, center_using_first_samples, np)
                 if clamp_std is not None:
                     song_signal = _std_clamp(song_signal, clamp_std, np)
@@ -469,6 +481,8 @@ def convert_recordings(
                 start = song_index * samples_per_song_src
                 stop = start + samples_per_song_src
                 song_signal = eeg[:, start:stop]
+                if robust_scale:
+                    song_signal = _robust_scale(song_signal, np)
                 song_signal = _center_using_first_samples(song_signal, center_using_first_samples, np)
                 if clamp_std is not None:
                     song_signal = _std_clamp(song_signal, clamp_std, np)
@@ -599,6 +613,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=1000,
         help="Center each extracted song using the mean of its first N samples. Default matches the paper's 1000 samples.",
     )
+    convert_parser.add_argument(
+        "--robust-scale",
+        action="store_true",
+        help="Apply per-channel robust scaling using median/IQR before centering and clamping.",
+    )
     return parser
 
 
@@ -626,6 +645,7 @@ def main() -> None:
             keep_eeg_channels=int(args.keep_eeg_channels),
             output_suffix=str(args.output_suffix),
             center_using_first_samples=int(args.center_using_first_samples),
+            robust_scale=bool(args.robust_scale),
         )
         return
 
