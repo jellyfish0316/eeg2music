@@ -81,8 +81,8 @@ data:
   chunk_sec: 3.5
   eeg_fs: 125
   audio_fs: 16000
-  batch_size: 4
-  num_workers: 0
+  batch_size: 12
+  num_workers: 4
   text_prompt: "Pop music"
   eeg_preprocessing:
     drop_face_channels: true
@@ -144,7 +144,7 @@ split:
 train:
   device: cuda
   model_dtype: float32
-  lr: 0.00005
+  lr: 0.0001
   epochs: 8
   grad_clip: 1.0
   log_every: 10
@@ -153,5 +153,5 @@ train:
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
   run_mode: single_fold
-  output_root: outputs/loso_runs_lr5e5_ep8
+  output_root: outputs/loso_runs_lr1e4_ep8
   checkpoint_name: model.pt
