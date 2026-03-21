@@ -77,12 +77,23 @@ def main() -> None:
     latents = wrapper(source)
     reconstructed = wrapper.decode_latents_to_waveform(latents)[0].detach().cpu().float().numpy()
 
+    pipe = wrapper._load_full_pipeline()
+    latents_direct = latents.to(device=wrapper.device, dtype=wrapper.dtype)
+    decoded_direct = wrapper.vae.decode(latents_direct / wrapper.scaling_factor)
+    mel_direct = decoded_direct.sample if hasattr(decoded_direct, "sample") else decoded_direct
+    waveform_direct = pipe.mel_spectrogram_to_waveform(mel_direct)
+    if waveform_direct.dim() == 1:
+        waveform_direct = waveform_direct.unsqueeze(0)
+    reconstructed_direct = waveform_direct[0].detach().cpu().float().numpy()
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     source_path = output_dir / "source.wav"
-    recon_path = output_dir / "roundtrip.wav"
+    recon_path = output_dir / "roundtrip_transposed.wav"
+    recon_direct_path = output_dir / "roundtrip_direct.wav"
     sf.write(source_path, source[start:stop].detach().cpu().numpy()[0], sample_rate)
     sf.write(recon_path, reconstructed, wrapper.vocoder_sample_rate)
+    sf.write(recon_direct_path, reconstructed_direct, wrapper.vocoder_sample_rate)
 
     manifest = {
         "meta": {
@@ -97,7 +108,8 @@ def main() -> None:
         },
         "files": {
             "source_wav": str(source_path),
-            "roundtrip_wav": str(recon_path),
+            "roundtrip_transposed_wav": str(recon_path),
+            "roundtrip_direct_wav": str(recon_direct_path),
         },
         "latent_shape": list(latents.shape),
     }
@@ -106,7 +118,8 @@ def main() -> None:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     print(f"saved source: {source_path}", flush=True)
-    print(f"saved roundtrip: {recon_path}", flush=True)
+    print(f"saved roundtrip_transposed: {recon_path}", flush=True)
+    print(f"saved roundtrip_direct: {recon_direct_path}", flush=True)
     print(f"saved manifest: {manifest_path}", flush=True)
 
 
