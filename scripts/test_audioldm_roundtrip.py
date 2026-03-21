@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import soundfile as sf
 import torch
+import numpy as np
 
 from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
 from scripts.train import load_config
@@ -74,6 +75,7 @@ def main() -> None:
         )
 
     source = torch.tensor(audio[start:stop], dtype=torch.float32, device=device).unsqueeze(0)
+    source_mel = wrapper.waveform_to_mel(source)
     latents = wrapper(source)
     reconstructed = wrapper.decode_latents_to_waveform(latents)[0].detach().cpu().float().numpy()
     mel_transposed = wrapper.decode_latents_to_mel(latents)
@@ -97,10 +99,16 @@ def main() -> None:
     source_path = output_dir / "source.wav"
     recon_path = output_dir / "roundtrip_transposed.wav"
     recon_direct_path = output_dir / "roundtrip_direct.wav"
+    source_mel_path = output_dir / "source_mel.npy"
+    transposed_mel_path = output_dir / "roundtrip_transposed_mel.npy"
+    direct_mel_path = output_dir / "roundtrip_direct_mel.npy"
     sf.write(source_path, source[start:stop].detach().cpu().numpy()[0], sample_rate)
     sf.write(recon_path, reconstructed, wrapper.vocoder_sample_rate)
     if reconstructed_direct is not None:
         sf.write(recon_direct_path, reconstructed_direct, wrapper.vocoder_sample_rate)
+    np.save(source_mel_path, source_mel.detach().cpu().float().numpy())
+    np.save(transposed_mel_path, mel_transposed.detach().cpu().float().numpy())
+    np.save(direct_mel_path, mel_direct.detach().cpu().float().numpy())
 
     manifest = {
         "meta": {
@@ -117,11 +125,26 @@ def main() -> None:
             "source_wav": str(source_path),
             "roundtrip_transposed_wav": str(recon_path),
             "roundtrip_direct_wav": None if reconstructed_direct is None else str(recon_direct_path),
+            "source_mel": str(source_mel_path),
+            "roundtrip_transposed_mel": str(transposed_mel_path),
+            "roundtrip_direct_mel": str(direct_mel_path),
         },
         "latent_shape": list(latents.shape),
         "mel_shapes": {
+            "source": list(source_mel.shape),
             "transposed": list(mel_transposed.shape),
             "direct": list(mel_direct.shape),
+        },
+        "mel_stats": {
+            "source_min": float(source_mel.min().item()),
+            "source_max": float(source_mel.max().item()),
+            "source_mean": float(source_mel.mean().item()),
+            "transposed_min": float(mel_transposed.min().item()),
+            "transposed_max": float(mel_transposed.max().item()),
+            "transposed_mean": float(mel_transposed.mean().item()),
+            "direct_min": float(mel_direct.min().item()),
+            "direct_max": float(mel_direct.max().item()),
+            "direct_mean": float(mel_direct.mean().item()),
         },
         "direct_decode_error": direct_error,
     }
@@ -135,6 +158,7 @@ def main() -> None:
         print(f"saved roundtrip_direct: {recon_direct_path}", flush=True)
     else:
         print(f"roundtrip_direct failed: {direct_error}", flush=True)
+    print(f"mel shape source: {tuple(source_mel.shape)}", flush=True)
     print(f"mel shape transposed: {tuple(mel_transposed.shape)}", flush=True)
     print(f"mel shape direct: {tuple(mel_direct.shape)}", flush=True)
     print(f"saved manifest: {manifest_path}", flush=True)
