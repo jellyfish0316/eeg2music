@@ -247,6 +247,43 @@ class AudioLDMUNetWrapper(nn.Module):
             "attention_mask": None if attention_mask is None else attention_mask.to(device=device),
         }
 
+    def get_text_conditioning_with_guidance(
+        self,
+        *,
+        batch_size: int,
+        device: torch.device | str,
+        dtype: torch.dtype,
+        guidance_scale: float,
+        negative_prompt: str = "",
+    ) -> dict[str, torch.Tensor | None]:
+        if guidance_scale <= 1.0:
+            return self.get_text_conditioning(batch_size=batch_size, device=device, dtype=dtype)
+
+        if self.pipeline is None:
+            raise RuntimeError("Classifier-free guidance requires a live AudioLDM2 pipeline instance.")
+        if self.text_prompt is None:
+            raise RuntimeError("Classifier-free guidance requires a configured text_prompt.")
+
+        prompt = [self.text_prompt] * batch_size
+        negative = [negative_prompt] * batch_size
+
+        self._move_text_modules(self.pipeline, self.device)
+        prompt_embeds, attention_mask, generated_prompt_embeds = self.pipeline.encode_prompt(
+            prompt=prompt,
+            device=self.device,
+            num_waveforms_per_prompt=1,
+            do_classifier_free_guidance=True,
+            negative_prompt=negative,
+            max_new_tokens=self.text_max_new_tokens,
+        )
+        return {
+            "encoder_hidden_states": None
+            if generated_prompt_embeds is None
+            else generated_prompt_embeds.to(device=device, dtype=dtype),
+            "encoder_hidden_states_1": prompt_embeds.to(device=device, dtype=dtype),
+            "attention_mask": None if attention_mask is None else attention_mask.to(device=device),
+        }
+
     @property
     def control_specs(self) -> dict[str, object]:
         return {

@@ -180,6 +180,7 @@ class EEGControlNetModel(nn.Module):
         timesteps: torch.Tensor,
         control_scale: float | None = None,
         use_control: bool = True,
+        text_conditioning: dict[str, torch.Tensor | None] | None = None,
     ) -> dict[str, torch.Tensor | dict[str, object] | None]:
         if zt.dim() != 4:
             raise RuntimeError(f"Expected zt to be 4D [B,C,H,W], got {tuple(zt.shape)}")
@@ -192,11 +193,24 @@ class EEGControlNetModel(nn.Module):
         unet_dtype = self.control_unet.dtype
         zt = zt.to(dtype=unet_dtype)
         projected_latent = self.projector(eeg).to(dtype=unet_dtype)
-        encoder_state_dict = self.control_unet.get_text_conditioning(
-            batch_size=zt.shape[0],
-            device=zt.device,
-            dtype=unet_dtype,
-        )
+        if text_conditioning is None:
+            encoder_state_dict = self.control_unet.get_text_conditioning(
+                batch_size=zt.shape[0],
+                device=zt.device,
+                dtype=unet_dtype,
+            )
+        else:
+            encoder_state_dict = {
+                "encoder_hidden_states": None
+                if text_conditioning.get("encoder_hidden_states") is None
+                else text_conditioning["encoder_hidden_states"].to(device=zt.device, dtype=unet_dtype),
+                "encoder_hidden_states_1": None
+                if text_conditioning.get("encoder_hidden_states_1") is None
+                else text_conditioning["encoder_hidden_states_1"].to(device=zt.device, dtype=unet_dtype),
+                "attention_mask": None
+                if text_conditioning.get("attention_mask") is None
+                else text_conditioning["attention_mask"].to(device=zt.device),
+            }
 
         use_control = bool(use_control and self.controlnet_enabled)
         control_residuals = None

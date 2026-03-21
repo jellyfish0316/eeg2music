@@ -29,6 +29,8 @@ def generate_latents(
     generator: torch.Generator | None = None,
     use_control: bool = True,
     control_scale: float | None = None,
+    guidance_scale: float = 3.5,
+    negative_prompt: str = "",
 ) -> torch.Tensor:
     model.eval()
     device = eeg.device
@@ -37,6 +39,7 @@ def generate_latents(
     if scheduler is None:
         scheduler = get_scheduler_from_model(model)
     scheduler.set_timesteps(int(num_inference_steps), device=device)
+    do_classifier_free_guidance = float(guidance_scale) > 1.0
 
     latent_shape = (
         batch_size,
@@ -59,25 +62,44 @@ def generate_latents(
     if pipe is not None and hasattr(pipe, "prepare_extra_step_kwargs"):
         extra_step_kwargs = pipe.prepare_extra_step_kwargs(generator, eta)
 
+    text_conditioning = model.control_unet.get_text_conditioning_with_guidance(
+        batch_size=batch_size,
+        device=device,
+        dtype=model.control_unet.dtype,
+        guidance_scale=float(guidance_scale),
+        negative_prompt=negative_prompt,
+    )
+
     for timestep in scheduler.timesteps:
         latent_model_input = latents
+        eeg_input = eeg
+        subject_input = subject_idx
+        if do_classifier_free_guidance:
+            latent_model_input = torch.cat([latents, latents], dim=0)
+            eeg_input = torch.cat([eeg, eeg], dim=0)
+            subject_input = torch.cat([subject_idx, subject_idx], dim=0)
         if hasattr(scheduler, "scale_model_input"):
             latent_model_input = scheduler.scale_model_input(latent_model_input, timestep)
         timestep_batch = torch.full(
-            (batch_size,),
+            (latent_model_input.shape[0],),
             int(timestep.item()) if torch.is_tensor(timestep) else int(timestep),
             device=device,
             dtype=torch.long,
         )
         pred = model.predict_noise(
-            eeg=eeg,
-            subject_idx=subject_idx,
+            eeg=eeg_input,
+            subject_idx=subject_input,
             zt=latent_model_input,
             timesteps=timestep_batch,
             use_control=use_control,
             control_scale=control_scale,
+            text_conditioning=text_conditioning,
         )
-        step_out = scheduler.step(pred["eps_pred"], timestep, latents, **extra_step_kwargs)
+        noise_pred = pred["eps_pred"]
+        if do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + float(guidance_scale) * (noise_pred_text - noise_pred_uncond)
+        step_out = scheduler.step(noise_pred, timestep, latents, **extra_step_kwargs)
         latents = step_out.prev_sample if hasattr(step_out, "prev_sample") else step_out[0]
 
     return latents
