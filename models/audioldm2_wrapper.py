@@ -87,10 +87,6 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
             norm="slaney",
             mel_scale="slaney",
         ).to(device)
-        self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(
-            stype="power", top_db=80
-        ).to(device)
-
     @property
     def scaling_factor(self) -> float:
         return float(self.vae.config.scaling_factor)
@@ -112,11 +108,12 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
         waveform = waveform.clamp(-1.0, 1.0)
 
         mel = self.mel_transform(waveform)
-        mel_db = self.amplitude_to_db(mel)
-        mel_db = mel_db / 80.0
-        mel_db = mel_db.unsqueeze(1)
+        # AudioLDM-family vocoders operate on log-mel values whose decoded range
+        # is roughly in the low negative to small positive range (not [-1, 0] dB-normalized values).
+        mel_log = torch.log(torch.clamp(mel, min=1e-5))
+        mel_log = mel_log.unsqueeze(1)
 
-        return mel_db.to(dtype=self.dtype)
+        return mel_log.to(dtype=self.dtype)
 
     def _load_full_pipeline(self):
         if AudioLDM2Pipeline is None:
