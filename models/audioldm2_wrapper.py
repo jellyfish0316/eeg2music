@@ -44,6 +44,16 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
         freeze_vae: bool = True,
         use_mode: bool = False,
         cache_pipeline: bool = True,
+        mel_n_fft: int = 1024,
+        mel_win_length: int = 1024,
+        mel_hop_length: int = 160,
+        mel_n_mels: int = 64,
+        mel_f_min: float = 0.0,
+        mel_f_max: float = 8000.0,
+        mel_power: float = 2.0,
+        mel_norm: str | None = "slaney",
+        mel_scale: str = "slaney",
+        mel_log_eps: float = 1e-5,
     ) -> None:
         super().__init__()
         if torchaudio is None:
@@ -57,6 +67,20 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
         self.dtype = dtype
         self.use_mode = use_mode
         self._full_pipeline = None
+        self.mel_log_eps = float(mel_log_eps)
+        self.mel_config = {
+            "n_fft": int(mel_n_fft),
+            "win_length": int(mel_win_length),
+            "hop_length": int(mel_hop_length),
+            "n_mels": int(mel_n_mels),
+            "f_min": float(mel_f_min),
+            "f_max": float(mel_f_max),
+            "power": float(mel_power),
+            "center": True,
+            "normalized": False,
+            "norm": mel_norm,
+            "mel_scale": mel_scale,
+        }
 
         # Load the official pipeline, but we only keep the VAE.
         pipe = AudioLDM2Pipeline.from_pretrained(model_id, torch_dtype=dtype)
@@ -75,17 +99,7 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
 
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
             sample_rate=sample_rate,
-            n_fft=1024,
-            win_length=1024,
-            hop_length=160,
-            n_mels=64,
-            f_min=0.0,
-            f_max=8000.0,
-            power=2.0,
-            center=True,
-            normalized=False,
-            norm="slaney",
-            mel_scale="slaney",
+            **self.mel_config,
         ).to(device)
     @property
     def scaling_factor(self) -> float:
@@ -110,7 +124,7 @@ class AudioLDM2MusicEncoderWrapper(nn.Module):
         mel = self.mel_transform(waveform)
         # AudioLDM-family vocoders operate on log-mel values whose decoded range
         # is roughly in the low negative to small positive range (not [-1, 0] dB-normalized values).
-        mel_log = torch.log(torch.clamp(mel, min=1e-5))
+        mel_log = torch.log(torch.clamp(mel, min=self.mel_log_eps))
         mel_log = mel_log.unsqueeze(1)
 
         return mel_log.to(dtype=self.dtype)
