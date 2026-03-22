@@ -230,6 +230,7 @@ class EEGControlNetModel(nn.Module):
             timesteps=timesteps,
             encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
             encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
+            attention_mask=encoder_state_dict["attention_mask"],
             control_residuals=control_residuals,
             control_scale=self.default_control_scale if control_scale is None else float(control_scale),
         )

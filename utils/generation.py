@@ -44,6 +44,72 @@ def _prepare_official_latents(
 
 
 @torch.no_grad()
+def _generate_latents_official_backbone(
+    model: EEGControlNetModel,
+    *,
+    batch_size: int,
+    device: torch.device,
+    num_inference_steps: int,
+    scheduler,
+    eta: float,
+    generator: torch.Generator | None,
+    guidance_scale: float,
+    negative_prompt: str,
+) -> torch.Tensor:
+    pipe = getattr(model.control_unet, "pipeline", None)
+    if pipe is None:
+        raise RuntimeError("Official backbone generation requires a live AudioLDM2 pipeline.")
+
+    scheduler.set_timesteps(int(num_inference_steps), device=device)
+    do_classifier_free_guidance = float(guidance_scale) > 1.0
+    height = int(model.latent_grid[2]) * int(pipe.vae_scale_factor)
+    latents = pipe.prepare_latents(
+        batch_size,
+        int(model.latent_grid[0]),
+        height,
+        model.control_unet.dtype,
+        device,
+        generator,
+    )
+    extra_step_kwargs = pipe.prepare_extra_step_kwargs(generator, eta)
+    text_conditioning = model.control_unet.get_text_conditioning_with_guidance(
+        batch_size=batch_size,
+        device=device,
+        dtype=model.control_unet.dtype,
+        guidance_scale=float(guidance_scale),
+        negative_prompt=negative_prompt,
+    )
+
+    for timestep in scheduler.timesteps:
+        latent_model_input = latents
+        if do_classifier_free_guidance:
+            latent_model_input = torch.cat([latents, latents], dim=0)
+        if hasattr(scheduler, "scale_model_input"):
+            latent_model_input = scheduler.scale_model_input(latent_model_input, timestep)
+        timestep_batch = torch.full(
+            (latent_model_input.shape[0],),
+            int(timestep.item()) if torch.is_tensor(timestep) else int(timestep),
+            device=device,
+            dtype=torch.long,
+        )
+        noise_pred = model.control_unet.backbone(
+            sample=latent_model_input,
+            timestep=timestep_batch,
+            encoder_hidden_states=text_conditioning["encoder_hidden_states"],
+            encoder_hidden_states_1=text_conditioning["encoder_hidden_states_1"],
+            encoder_attention_mask_1=text_conditioning["attention_mask"],
+        )
+        noise_pred = noise_pred.sample if hasattr(noise_pred, "sample") else noise_pred
+        if do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + float(guidance_scale) * (noise_pred_text - noise_pred_uncond)
+        latents = scheduler.step(noise_pred, timestep, latents, **extra_step_kwargs).prev_sample
+
+    # Convert back to the training/checkpoint latent layout [B,C,F/4,T/4].
+    return latents.transpose(-1, -2).contiguous()
+
+
+@torch.no_grad()
 def generate_latents(
     model: EEGControlNetModel,
     *,
@@ -64,6 +130,20 @@ def generate_latents(
 
     if scheduler is None:
         scheduler = get_scheduler_from_model(model)
+
+    if not use_control:
+        return _generate_latents_official_backbone(
+            model,
+            batch_size=batch_size,
+            device=device,
+            num_inference_steps=num_inference_steps,
+            scheduler=scheduler,
+            eta=eta,
+            generator=generator,
+            guidance_scale=guidance_scale,
+            negative_prompt=negative_prompt,
+        )
+
     scheduler.set_timesteps(int(num_inference_steps), device=device)
     do_classifier_free_guidance = float(guidance_scale) > 1.0
 

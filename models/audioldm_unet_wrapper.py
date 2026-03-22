@@ -442,11 +442,11 @@ class AudioLDMUNetWrapper(nn.Module):
         timesteps: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         encoder_hidden_states_1: torch.Tensor | None,
+        attention_mask: torch.Tensor | None,
         control_residuals: dict[str, object] | None,
     ) -> torch.Tensor:
-        attention_mask = None
         encoder_attention_mask = None
-        encoder_attention_mask_1 = None
+        encoder_attention_mask_1 = attention_mask
         cross_attention_kwargs = None
         timestep_cond = None
         class_labels = None
@@ -581,6 +581,7 @@ class AudioLDMUNetWrapper(nn.Module):
         timesteps: torch.Tensor | None = None,
         encoder_hidden_states: torch.Tensor | None = None,
         encoder_hidden_states_1: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
         control_residuals: dict[str, object] | None = None,
         control_scale: float = 1.0,
         **kwargs,
@@ -628,6 +629,7 @@ class AudioLDMUNetWrapper(nn.Module):
                 timestep=timesteps,
                 encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
                 encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
+                encoder_attention_mask_1=None if attention_mask is None else attention_mask.to(device=self.device),
             )
             sample = out.sample if hasattr(out, "sample") else out
         else:
@@ -636,6 +638,7 @@ class AudioLDMUNetWrapper(nn.Module):
                 timesteps=timesteps,
                 encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
                 encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
+                attention_mask=None if attention_mask is None else attention_mask.to(device=self.device),
                 control_residuals=merged_control,
             )
         sample = sample.to(dtype=x.dtype)
