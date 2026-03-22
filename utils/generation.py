@@ -17,6 +17,32 @@ def get_scheduler_from_model(model: EEGControlNetModel):
     return copy.deepcopy(pipe.scheduler)
 
 
+def _prepare_official_latents(
+    model: EEGControlNetModel,
+    *,
+    batch_size: int,
+    device: torch.device,
+    generator: torch.Generator | None,
+) -> torch.Tensor:
+    pipe = getattr(model.control_unet, "pipeline", None)
+    if pipe is None or not hasattr(pipe, "prepare_latents"):
+        raise RuntimeError("The pretrained U-Net wrapper must keep a live pipeline with prepare_latents for generation.")
+
+    # Official AudioLDM2 prepare_latents expects latents laid out as [B, C, T/4, F/4].
+    # Our training cache stores latents in [B, C, F/4, T/4], so we transpose back after
+    # sampling to stay consistent with the trained ControlNet/projector path.
+    official_height = int(model.latent_grid[2]) * int(pipe.vae_scale_factor)
+    latents = pipe.prepare_latents(
+        batch_size,
+        int(model.latent_grid[0]),
+        official_height,
+        model.control_unet.dtype,
+        device,
+        generator,
+    )
+    return latents.transpose(-1, -2).contiguous()
+
+
 @torch.no_grad()
 def generate_latents(
     model: EEGControlNetModel,
@@ -41,21 +67,12 @@ def generate_latents(
     scheduler.set_timesteps(int(num_inference_steps), device=device)
     do_classifier_free_guidance = float(guidance_scale) > 1.0
 
-    latent_shape = (
-        batch_size,
-        int(model.latent_grid[0]),
-        int(model.latent_grid[1]),
-        int(model.latent_grid[2]),
-    )
-    latents = torch.randn(
-        latent_shape,
+    latents = _prepare_official_latents(
+        model,
+        batch_size=batch_size,
         device=device,
-        dtype=model.control_unet.dtype,
         generator=generator,
     )
-    init_noise_sigma = getattr(scheduler, "init_noise_sigma", None)
-    if init_noise_sigma is not None:
-        latents = latents * float(init_noise_sigma)
 
     extra_step_kwargs = {}
     pipe = getattr(model.control_unet, "pipeline", None)
