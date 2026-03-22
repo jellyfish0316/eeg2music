@@ -140,11 +140,15 @@ def build_dataloader(
     target_instrument: str | None,
     subjects: list[int],
     shuffle: bool,
+    chunk_split_name: str = "train",
 ) -> tuple[ConditionNMEDTDataset, DataLoader]:
     data_cfg = cfg["data"]
     exp_cfg = cfg.get("experiment", {})
     latent_cfg = cfg.get("latent_cache", {})
+    split_cfg = cfg.get("split", {})
     use_precomputed_latents = bool(latent_cfg.get("enabled", False))
+    chunk_splits = split_cfg.get("chunk_splits", {})
+    chunk_range = tuple(chunk_splits.get(chunk_split_name, [0.0, 1.0]))
 
     dataset = ConditionNMEDTDataset(
         condition_type=condition_type,
@@ -163,6 +167,7 @@ def build_dataloader(
         text_prompt=str(data_cfg.get("text_prompt", "Pop music")),
         eeg_preprocessing=None,
         precomputed_latents_path=latent_cfg.get("path") if use_precomputed_latents else None,
+        chunk_range=chunk_range,
     )
     loader = DataLoader(
         dataset,
@@ -375,6 +380,7 @@ def run_one_condition(
         target_instrument=target_instrument,
         subjects=fold_meta["train_subjects"],
         shuffle=True,
+        chunk_split_name="train",
     )
     ds_val, dl_val = build_dataloader(
         cfg,
@@ -382,6 +388,7 @@ def run_one_condition(
         target_instrument=target_instrument,
         subjects=fold_meta["val_subjects"],
         shuffle=False,
+        chunk_split_name="val",
     )
     ds_test, dl_test = build_dataloader(
         cfg,
@@ -389,6 +396,7 @@ def run_one_condition(
         target_instrument=target_instrument,
         subjects=fold_meta["test_subjects"],
         shuffle=False,
+        chunk_split_name="test",
     )
 
     model = build_model_from_dataset(cfg, dataset=ds_train, device=device)

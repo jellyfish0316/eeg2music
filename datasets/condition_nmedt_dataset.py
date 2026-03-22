@@ -41,6 +41,7 @@ class SongRecord:
     audio: np.ndarray
     n_chunks: int
     sources: dict[str, EEGSource]
+    chunk_offset: int = 0
 
 
 def _load_eeg_source(
@@ -94,6 +95,7 @@ class ConditionNMEDTDataset(Dataset):
         text_prompt: str = "Pop music",
         eeg_preprocessing: dict[str, Any] | None = None,
         precomputed_latents_path: str | None = None,
+        chunk_range: tuple[float, float] | None = None,
     ) -> None:
         super().__init__()
         if condition_type not in self.CONDITION_TO_ID:
@@ -118,6 +120,7 @@ class ConditionNMEDTDataset(Dataset):
         self.text_prompt = text_prompt
         self.eeg_preprocessing = dict(eeg_preprocessing or {"per_channel_normalization": normalize_eeg})
         self.precomputed_latents_path = precomputed_latents_path
+        self.chunk_range = self._normalize_chunk_range(chunk_range)
 
         self.instrument_to_id = {inst: i for i, inst in enumerate(self.active_instruments)}
 
@@ -156,6 +159,15 @@ class ConditionNMEDTDataset(Dataset):
         self.latent_shape: tuple[int, int, int] | None = None
         if precomputed_latents_path is not None:
             self._load_latent_cache(Path(precomputed_latents_path))
+
+    @staticmethod
+    def _normalize_chunk_range(chunk_range: tuple[float, float] | None) -> tuple[float, float]:
+        if chunk_range is None:
+            return (0.0, 1.0)
+        start, end = float(chunk_range[0]), float(chunk_range[1])
+        if not (0.0 <= start < end <= 1.0):
+            raise ValueError(f"chunk_range must satisfy 0 <= start < end <= 1, got {chunk_range}")
+        return (start, end)
 
     @staticmethod
     def _normalize_song_specs(
@@ -254,11 +266,16 @@ class ConditionNMEDTDataset(Dataset):
 
             n_chunks_audio = len(audio) // self.audio_chunk_len
             n_chunks_eeg = min(sources[name].total_time // self.eeg_chunk_len for name in required_sources)
-            n_chunks = int(min(n_chunks_audio, n_chunks_eeg))
-            if n_chunks == 0:
+            total_chunks = int(min(n_chunks_audio, n_chunks_eeg))
+            if total_chunks == 0:
                 raise ValueError(
                     f"No usable chunks for {spec.get('name', idx)!r}. audio={n_chunks_audio}, eeg={n_chunks_eeg}"
                 )
+            start_frac, end_frac = self.chunk_range
+            chunk_offset = int(np.floor(total_chunks * start_frac))
+            chunk_stop = int(np.floor(total_chunks * end_frac))
+            chunk_stop = max(chunk_offset + 1, min(total_chunks, chunk_stop))
+            n_chunks = int(chunk_stop - chunk_offset)
 
             if records:
                 ref = records[0].sources[required_sources[0]]
@@ -273,6 +290,7 @@ class ConditionNMEDTDataset(Dataset):
                     audio=audio,
                     n_chunks=n_chunks,
                     sources=sources,
+                    chunk_offset=chunk_offset,
                 )
             )
         return records
@@ -328,9 +346,13 @@ class ConditionNMEDTDataset(Dataset):
         for song_idx, (record, latents) in enumerate(zip(self.song_records, per_song)):
             if not torch.is_tensor(latents) or latents.dim() != 4:
                 raise ValueError(f"Expected cached latents [N,C,H,W] for song {song_idx}, got {type(latents)}")
-            if latents.shape[0] < record.n_chunks:
-                raise ValueError(f"Latent cache chunks {latents.shape[0]} < dataset chunks {record.n_chunks} for song {record.name}")
-            self.z0_by_song.append(latents[: record.n_chunks].float().contiguous())
+            required_chunks = record.chunk_offset + record.n_chunks
+            if latents.shape[0] < required_chunks:
+                raise ValueError(
+                    f"Latent cache chunks {latents.shape[0]} < required chunks {required_chunks} "
+                    f"for song {record.name} (offset={record.chunk_offset}, n_chunks={record.n_chunks})"
+                )
+            self.z0_by_song.append(latents.float().contiguous())
         self.latents_by_song = self.z0_by_song
         self.latent_shape = tuple(int(v) for v in self.z0_by_song[0].shape[1:])
         if len(self.song_records) == 1:
@@ -341,9 +363,14 @@ class ConditionNMEDTDataset(Dataset):
             raise ValueError(f"Expected latent cache [N,C,H,W], got {tuple(z0_by_chunk.shape)}")
         if len(self.song_records) != 1:
             raise ValueError("Single-song latent cache provided for a multi-song dataset.")
-        if z0_by_chunk.shape[0] < self.song_records[0].n_chunks:
-            raise ValueError(f"Latent cache chunks {z0_by_chunk.shape[0]} < dataset chunks {self.song_records[0].n_chunks}")
-        self.z0_by_chunk = z0_by_chunk[: self.song_records[0].n_chunks].float().contiguous()
+        record = self.song_records[0]
+        required_chunks = record.chunk_offset + record.n_chunks
+        if z0_by_chunk.shape[0] < required_chunks:
+            raise ValueError(
+                f"Latent cache chunks {z0_by_chunk.shape[0]} < required chunks {required_chunks} "
+                f"(offset={record.chunk_offset}, n_chunks={record.n_chunks})"
+            )
+        self.z0_by_chunk = z0_by_chunk.float().contiguous()
         self.z0_by_song = [self.z0_by_chunk]
         self.latents_by_song = self.z0_by_song
         self.latent_shape = tuple(int(v) for v in self.z0_by_chunk.shape[1:])
@@ -364,7 +391,8 @@ class ConditionNMEDTDataset(Dataset):
 
     def _slice_eeg(self, song_idx: int, src_name: str, subj_idx: int, chunk_idx: int) -> np.ndarray:
         src = self.song_records[song_idx].sources[src_name]
-        st = chunk_idx * self.eeg_chunk_len
+        absolute_chunk_idx = self.song_records[song_idx].chunk_offset + chunk_idx
+        st = absolute_chunk_idx * self.eeg_chunk_len
         ed = st + self.eeg_chunk_len
         return src.data[:, st:ed, subj_idx].copy()
 
@@ -391,7 +419,8 @@ class ConditionNMEDTDataset(Dataset):
         song = self.song_records[song_idx]
         eeg, instrument_id, trial_id, is_passive = self._build_eeg(song_idx, subj_idx, chunk_idx)
 
-        a_st = chunk_idx * self.audio_chunk_len
+        absolute_chunk_idx = song.chunk_offset + chunk_idx
+        a_st = absolute_chunk_idx * self.audio_chunk_len
         a_ed = a_st + self.audio_chunk_len
         audio = song.audio[a_st:a_ed].copy()
 
@@ -420,5 +449,5 @@ class ConditionNMEDTDataset(Dataset):
             "eeg_preprocessing": self.eeg_preprocessing,
         }
         if self.z0_by_song is not None:
-            sample["z0"] = self.z0_by_song[song_idx][chunk_idx].clone()
+            sample["z0"] = self.z0_by_song[song_idx][absolute_chunk_idx].clone()
         return sample

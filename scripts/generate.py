@@ -94,6 +94,7 @@ def main() -> None:
         target_instrument=job["target_instrument"] or None,
         subjects=fold_meta[subject_key],
         shuffle=False,
+        chunk_split_name=args.split,
     )
 
     model = build_model_from_dataset(cfg, dataset=dataset, device=device)
