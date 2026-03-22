@@ -445,6 +445,7 @@ class AudioLDMUNetWrapper(nn.Module):
         attention_mask: torch.Tensor | None,
         control_residuals: dict[str, object] | None,
     ) -> torch.Tensor:
+        latent_attention_mask = None
         encoder_attention_mask = None
         encoder_attention_mask_1 = attention_mask
         cross_attention_kwargs = None
@@ -481,7 +482,7 @@ class AudioLDMUNetWrapper(nn.Module):
                     hidden_states=sample,
                     temb=emb,
                     encoder_hidden_states=encoder_hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=latent_attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                     encoder_attention_mask=encoder_attention_mask,
                     encoder_hidden_states_1=encoder_hidden_states_1,
@@ -515,11 +516,11 @@ class AudioLDMUNetWrapper(nn.Module):
                 )
 
         if self.backbone.mid_block is not None:
-            sample = self.backbone.mid_block(
+                sample = self.backbone.mid_block(
                 sample,
                 emb,
                 encoder_hidden_states=encoder_hidden_states,
-                attention_mask=attention_mask,
+                attention_mask=latent_attention_mask,
                 cross_attention_kwargs=cross_attention_kwargs,
                 encoder_attention_mask=encoder_attention_mask,
                 encoder_hidden_states_1=encoder_hidden_states_1,
@@ -553,7 +554,7 @@ class AudioLDMUNetWrapper(nn.Module):
                     encoder_hidden_states=encoder_hidden_states,
                     cross_attention_kwargs=cross_attention_kwargs,
                     upsample_size=upsample_size,
-                    attention_mask=attention_mask,
+                    attention_mask=latent_attention_mask,
                     encoder_attention_mask=encoder_attention_mask,
                     encoder_hidden_states_1=encoder_hidden_states_1,
                     encoder_attention_mask_1=encoder_attention_mask_1,
