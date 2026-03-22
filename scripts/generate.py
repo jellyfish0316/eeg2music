@@ -10,7 +10,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import torch
-import numpy as np
 
 from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
 from scripts.train import build_condition_jobs, build_dataloader, build_model_from_dataset, load_config
@@ -133,31 +132,15 @@ def main() -> None:
                 eeg = torch.randn_like(eeg)
         subject_idx = batch["subject_idx"].to(device)
         use_control = bool(cfg.get("controlnet", {}).get("enabled", False)) and not bool(args.disable_control)
-        if use_control:
-            pred_latents = generate_latents(
-                model,
-                eeg=eeg,
-                subject_idx=subject_idx,
-                num_inference_steps=int(args.num_inference_steps),
-                use_control=use_control,
-                control_scale=float(cfg.get("controlnet", {}).get("control_scale", 1.0)),
-            )
-            predicted_audio = decoder.decode_latents_to_waveform(pred_latents)
-        else:
-            pipe = decoder._load_full_pipeline()
-            prompt = [str(data_cfg.get("text_prompt", "Pop music"))] * int(eeg.shape[0])
-            generated = pipe(
-                prompt=prompt,
-                audio_length_in_s=float(data_cfg.get("chunk_sec", 3.5)),
-                num_inference_steps=int(args.num_inference_steps),
-                guidance_scale=3.5,
-                num_waveforms_per_prompt=1,
-                output_type="np",
-            ).audios
-            if isinstance(generated, np.ndarray):
-                predicted_audio = torch.from_numpy(generated)
-            else:
-                predicted_audio = torch.tensor(generated)
+        pred_latents = generate_latents(
+            model,
+            eeg=eeg,
+            subject_idx=subject_idx,
+            num_inference_steps=int(args.num_inference_steps),
+            use_control=use_control,
+            control_scale=float(cfg.get("controlnet", {}).get("control_scale", 1.0)),
+        )
+        predicted_audio = decoder.decode_latents_to_waveform(pred_latents)
         target_audio = batch["audio"]
 
         names = []
