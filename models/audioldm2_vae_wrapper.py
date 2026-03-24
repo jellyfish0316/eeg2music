@@ -24,7 +24,7 @@ class AudioLDM2LatentOutput:
     posterior_logvar: Optional[torch.Tensor] = None
 
 
-class AudioLDM2MusicEncoderWrapper(nn.Module):
+class AudioLDM2VAEWrapper(nn.Module):
     """
     waveform -> log-mel spectrogram -> AudioLDM2 VAE encoder -> latent z
 

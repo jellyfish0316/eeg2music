@@ -6,7 +6,7 @@ from pathlib import Path
 import soundfile as sf
 import torch
 
-from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
+from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 from models.eeg_conditioned_audioldm2 import EEGConditionedAudioLDM2
 
 
@@ -204,7 +204,7 @@ def generate_latents(
 
 @torch.no_grad()
 def batch_clap_similarity(
-    audio_helper: AudioLDM2MusicEncoderWrapper,
+    audio_helper: AudioLDM2VAEWrapper,
     predicted_waveforms: torch.Tensor,
     target_waveforms: torch.Tensor,
     *,

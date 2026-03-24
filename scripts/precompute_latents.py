@@ -12,7 +12,7 @@ import yaml
 import torch
 
 from datasets.nmedt_dataset import NMEDTDataset
-from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
+from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 from utils.seed import set_seed
 
 
@@ -39,7 +39,7 @@ def main():
     )
     dtype = torch.float16 if device.type == "cuda" else torch.float32
 
-    encoder = AudioLDM2MusicEncoderWrapper(
+    encoder = AudioLDM2VAEWrapper(
         model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
         sample_rate=audio_cfg.get("sample_rate", data_cfg["audio_fs"]),
         device=str(device),

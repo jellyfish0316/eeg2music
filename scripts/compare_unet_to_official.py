@@ -11,7 +11,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import torch
 
-from models.audioldm_unet_wrapper import AudioLDMUNetWrapper
+from models.audioldm2_unet_wrapper import AudioLDM2UNetWrapper
 from scripts.train import load_config
 from utils.seed import set_seed
 
@@ -42,7 +42,7 @@ def main() -> None:
     device = torch.device(train_cfg["device"] if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type == "cuda" else torch.float32
 
-    wrapper = AudioLDMUNetWrapper(
+    wrapper = AudioLDM2UNetWrapper(
         model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
         device=device,
         dtype=dtype,

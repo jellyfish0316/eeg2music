@@ -11,7 +11,7 @@ except Exception:
     AudioLDM2Pipeline = None
 
 
-class AudioLDMUNetWrapper(nn.Module):
+class AudioLDM2UNetWrapper(nn.Module):
     def __init__(
         self,
         *,
@@ -296,7 +296,7 @@ class AudioLDMUNetWrapper(nn.Module):
         if isinstance(value, (list, tuple)):
             out = []
             for item in value:
-                out.extend(AudioLDMUNetWrapper._flatten_values(item))
+                out.extend(AudioLDM2UNetWrapper._flatten_values(item))
             return out
         return [value]
 

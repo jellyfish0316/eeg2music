@@ -128,7 +128,7 @@ def test_run_one_condition_clap_validation_writes_best_checkpoint(
     install_fake_training_stack(monkeypatch)
     monkeypatch.setattr(train_module, "evaluate_loss", lambda *args, **kwargs: 0.25)
     monkeypatch.setattr(train_module, "evaluate_generation_clap", lambda *args, **kwargs: 0.42)
-    monkeypatch.setattr(train_module, "AudioLDM2MusicEncoderWrapper", lambda *args, **kwargs: object())
+    monkeypatch.setattr(train_module, "AudioLDM2VAEWrapper", lambda *args, **kwargs: object())
 
     result = train_module.run_one_condition(
         make_cfg(),
@@ -157,7 +157,7 @@ def test_run_one_condition_prefers_higher_clap_over_lower_val_loss(
 
     monkeypatch.setattr(train_module, "evaluate_loss", lambda *args, **kwargs: next(val_losses))
     monkeypatch.setattr(train_module, "evaluate_generation_clap", lambda *args, **kwargs: next(val_claps))
-    monkeypatch.setattr(train_module, "AudioLDM2MusicEncoderWrapper", lambda *args, **kwargs: object())
+    monkeypatch.setattr(train_module, "AudioLDM2VAEWrapper", lambda *args, **kwargs: object())
 
     result = train_module.run_one_condition(
         make_cfg(epochs=2),
@@ -185,7 +185,7 @@ def test_run_one_condition_clap_validation_requires_helper(
     def broken_helper(*args, **kwargs):
         raise RuntimeError("CLAP unavailable")
 
-    monkeypatch.setattr(train_module, "AudioLDM2MusicEncoderWrapper", broken_helper)
+    monkeypatch.setattr(train_module, "AudioLDM2VAEWrapper", broken_helper)
 
     with pytest.raises(RuntimeError, match="CLAP unavailable"):
         train_module.run_one_condition(

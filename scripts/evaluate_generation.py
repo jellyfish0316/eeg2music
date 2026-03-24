@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 import soundfile as sf
 import torch
 
-from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
+from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,7 +46,7 @@ def main() -> None:
 
     first = rows[0]
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    audio_helper = AudioLDM2MusicEncoderWrapper(
+    audio_helper = AudioLDM2VAEWrapper(
         model_id=str(first["model_id"]),
         sample_rate=int(first["audio_sample_rate"]),
         device=device,

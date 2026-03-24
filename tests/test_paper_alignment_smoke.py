@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import models.audioldm_unet_wrapper as unet_wrapper_module
+import models.audioldm2_unet_wrapper as unet_wrapper_module
 from models.eeg_projector import EEGProjector
 from models.eeg_conditioned_audioldm2 import EEGConditionedAudioLDM2
 from scripts.train import apply_freeze_policy, derive_latent_grid, validate_model_config
@@ -317,7 +317,7 @@ def build_test_model(
 
 def test_pretrained_unet_wrapper_uses_pipeline_loader(monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_pipeline(monkeypatch)
-    wrapper = unet_wrapper_module.AudioLDMUNetWrapper(
+    wrapper = unet_wrapper_module.AudioLDM2UNetWrapper(
         model_id="fake/audioldm2",
         device="cpu",
         dtype=torch.float32,
@@ -343,7 +343,7 @@ def test_text_cache_file_reuses_fixed_prompt_embeddings(
 ) -> None:
     install_fake_pipeline(monkeypatch)
     cache_path = tmp_path / "text_cache.pt"
-    wrapper = unet_wrapper_module.AudioLDMUNetWrapper(
+    wrapper = unet_wrapper_module.AudioLDM2UNetWrapper(
         model_id="fake/audioldm2",
         device="cpu",
         dtype=torch.float32,
@@ -357,7 +357,7 @@ def test_text_cache_file_reuses_fixed_prompt_embeddings(
     assert "_cached_prompt_embeds" in cached_state
     assert "_cached_generated_prompt_embeds" in cached_state
 
-    wrapper_2 = unet_wrapper_module.AudioLDMUNetWrapper(
+    wrapper_2 = unet_wrapper_module.AudioLDM2UNetWrapper(
         model_id="fake/audioldm2",
         device="cpu",
         dtype=torch.float32,
@@ -379,7 +379,7 @@ def test_pretrained_unet_load_failure_is_fatal(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(unet_wrapper_module, "AudioLDM2Pipeline", BrokenPipeline)
     with pytest.raises(RuntimeError, match="load failed"):
-        unet_wrapper_module.AudioLDMUNetWrapper(
+        unet_wrapper_module.AudioLDM2UNetWrapper(
             model_id="broken/model",
             device="cpu",
             dtype=torch.float32,
@@ -480,7 +480,7 @@ def test_derive_latent_grid_prefers_config_then_cache_then_checkpoint(monkeypatc
             assert num_audio_samples == 56000
             return (8, 9, 10)
 
-    monkeypatch.setattr("scripts.train.AudioLDM2MusicEncoderWrapper", DummyEncoder)
+    monkeypatch.setattr("scripts.train.AudioLDM2VAEWrapper", DummyEncoder)
     assert derive_latent_grid(cfg, dataset=ds, device=torch.device("cpu")) == (8, 9, 10)
 
 

@@ -75,7 +75,7 @@ Because of that, proposal assumptions may differ from the original paper in subj
 - [models/eeg_conditioned_audioldm2.py](/home/bryan/eeg/models/eeg_conditioned_audioldm2.py): main model (`EEGConditionedAudioLDM2`)
 - [models/eeg_projector.py](/home/bryan/eeg/models/eeg_projector.py): paper-style EEG projector
 - [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py): ControlNet adapter branch (`EEGControlNet`)
-- [models/audioldm2_wrapper.py](/home/bryan/eeg/models/audioldm2_wrapper.py): AudioLDM2 VAE wrapper and latent-shape introspection
+- [models/audioldm2_vae_wrapper.py](/home/bryan/eeg/models/audioldm2_vae_wrapper.py): AudioLDM2 VAE wrapper and latent-shape introspection
 - [datasets/condition_nmedt_dataset.py](/home/bryan/eeg/datasets/condition_nmedt_dataset.py): condition-aware EEG dataset
 - [tests/test_paper_alignment_smoke.py](/home/bryan/eeg/tests/test_paper_alignment_smoke.py): smoke and regression tests
 
@@ -382,7 +382,7 @@ Reason: the paper-aligned path should be `EEG projector -> ControlNet residual i
 - The dataset/config default prompt remains `"Pop music"`, and EEG preprocessing is kept minimal.
 Reason: those two details are closer to the paper's stated setup than adding extra handcrafted EEG transforms, and the fixed prompt is now encoded through the official AudioLDM2 text path.
 
-- Internal block/channel matching for ControlNet residual injection is inferred from the pretrained diffusers `AudioLDM2Pipeline.unet` structure in [audioldm_unet_wrapper.py](/home/bryan/eeg/models/audioldm_unet_wrapper.py).
+- Internal block/channel matching for ControlNet residual injection is inferred from the pretrained diffusers `AudioLDM2Pipeline.unet` structure in [audioldm2_unet_wrapper.py](/home/bryan/eeg/models/audioldm2_unet_wrapper.py).
 Reason: with no official repo, the pretrained diffusers module graph is the most concrete source of truth for stage alignment.
 
 These choices are meant to keep the repo close to the paper in architecture and training interface, while making each non-verifiable implementation choice explicit.

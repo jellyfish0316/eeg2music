@@ -4,9 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
+from .audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 from .eeg_controlnet import EEGControlNet
-from .audioldm_unet_wrapper import AudioLDMUNetWrapper
+from .audioldm2_unet_wrapper import AudioLDM2UNetWrapper
 from .eeg_projector import EEGProjector
 from .subject_adapter import SubjectAdapter
 
@@ -58,10 +58,10 @@ class EEGConditionedAudioLDM2(nn.Module):
                 emb_dim=subject_emb_dim,
             )
 
-        self.audio_encoder: AudioLDM2MusicEncoderWrapper | None = None
+        self.audio_encoder: AudioLDM2VAEWrapper | None = None
         inferred_latent_channels = None
         if enable_audio_encoder:
-            self.audio_encoder = AudioLDM2MusicEncoderWrapper(
+            self.audio_encoder = AudioLDM2VAEWrapper(
                 model_id=audio_model_id,
                 sample_rate=audio_sample_rate,
                 device=str(device),
@@ -99,7 +99,7 @@ class EEGConditionedAudioLDM2(nn.Module):
             use_linear_fallback=projector_use_linear_fallback,
         )
 
-        self.control_unet = AudioLDMUNetWrapper(
+        self.control_unet = AudioLDM2UNetWrapper(
             model_id=audio_model_id,
             device=device,
             dtype=self.model_dtype,

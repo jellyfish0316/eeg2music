@@ -72,8 +72,8 @@ graph LR
 - `models/subject_adapter.py` optionally applies subject-specific affine modulation to EEG.
 - `models/eeg_projector.py` maps EEG `[B, C, T]` to latent grid `[B, C_latent, H, W]`.
 - `models/eeg_controlnet.py` is a copied/modified ControlNet-like branch built from the pretrained U-Net encoder and middle block.
-- `models/audioldm_unet_wrapper.py` wraps the pretrained AudioLDM2 U-Net and text conditioning.
-- `models/audioldm2_wrapper.py` wraps AudioLDM2 VAE encode/decode and CLAP-audio feature extraction.
+- `models/audioldm2_unet_wrapper.py` wraps the pretrained AudioLDM2 U-Net and text conditioning.
+- `models/audioldm2_vae_wrapper.py` wraps AudioLDM2 VAE encode/decode and CLAP-audio feature extraction.
 - `utils/generation.py` performs latent generation and waveform decoding support.
 
 ## 3. Data Pipeline
@@ -152,13 +152,13 @@ The current training code passes `normalize_eeg=False` and `eeg_preprocessing=No
 
 #### Audio preprocessing
 
-Audio is not converted to mel externally. Instead, `models/audioldm2_wrapper.py` defines the audio-to-latent path:
+Audio is not converted to mel externally. Instead, `models/audioldm2_vae_wrapper.py` defines the audio-to-latent path:
 
 - `waveform_to_mel`
 - `encode_mel`
 - `forward`
 
-Important current details from `AudioLDM2MusicEncoderWrapper`:
+Important current details from `AudioLDM2VAEWrapper`:
 
 - uses `torchaudio.transforms.MelSpectrogram`
 - current mel config defaults:
@@ -345,11 +345,11 @@ Source classification:
 - modified/custom ControlNet-style module
 - built from copied pretrained components plus custom zero-conv injection
 
-### 4.5 `AudioLDMUNetWrapper`
+### 4.5 `AudioLDM2UNetWrapper`
 
 File:
 
-- [models/audioldm_unet_wrapper.py](/home/bryan/eeg/models/audioldm_unet_wrapper.py)
+- [models/audioldm2_unet_wrapper.py](/home/bryan/eeg/models/audioldm2_unet_wrapper.py)
 
 Purpose:
 
@@ -376,11 +376,11 @@ Source classification:
 
 - modified wrapper around official pretrained components
 
-### 4.6 `AudioLDM2MusicEncoderWrapper`
+### 4.6 `AudioLDM2VAEWrapper`
 
 File:
 
-- [models/audioldm2_wrapper.py](/home/bryan/eeg/models/audioldm2_wrapper.py)
+- [models/audioldm2_vae_wrapper.py](/home/bryan/eeg/models/audioldm2_vae_wrapper.py)
 
 Purpose:
 
@@ -410,7 +410,7 @@ Source classification:
 
 ### 4.7 CLAP / audio similarity path
 
-This repo does not instantiate a standalone external CLAP package directly in the evaluation scripts. Instead, `AudioLDM2MusicEncoderWrapper.get_audio_features()` uses:
+This repo does not instantiate a standalone external CLAP package directly in the evaluation scripts. Instead, `AudioLDM2VAEWrapper.get_audio_features()` uses:
 
 - `pipe.feature_extractor`
 - `pipe.text_encoder.get_audio_features`
@@ -448,9 +448,9 @@ From code alone, this is the similarity mechanism used for:
   - subject-specific modulation
 - [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py)
   - ControlNet branch
-- [models/audioldm_unet_wrapper.py](/home/bryan/eeg/models/audioldm_unet_wrapper.py)
+- [models/audioldm2_unet_wrapper.py](/home/bryan/eeg/models/audioldm2_unet_wrapper.py)
   - pretrained AudioLDM2 U-Net wrapper
-- [models/audioldm2_wrapper.py](/home/bryan/eeg/models/audioldm2_wrapper.py)
+- [models/audioldm2_vae_wrapper.py](/home/bryan/eeg/models/audioldm2_vae_wrapper.py)
   - VAE/audio helper wrapper
 
 ### `scripts/`
@@ -522,7 +522,7 @@ This is standard latent diffusion noise-prediction training.
 When `train.validation_metric: clap`, validation does:
 
 1. generate audio latents with `utils/generation.generate_latents()`
-2. decode to waveform via `AudioLDM2MusicEncoderWrapper.decode_latents_to_waveform()`
+2. decode to waveform via `AudioLDM2VAEWrapper.decode_latents_to_waveform()`
 3. compute audio embedding cosine similarity with `batch_clap_similarity()`
 
 ### Config influence
@@ -555,7 +555,7 @@ Important config blocks that directly affect training:
 1. Load config and resolve split.
 2. Build dataset and loader.
 3. Load `EEGConditionedAudioLDM2` checkpoint.
-4. Build `AudioLDM2MusicEncoderWrapper` for decoding.
+4. Build `AudioLDM2VAEWrapper` for decoding.
 5. For each batch:
    - optionally replace EEG with zero/random depending on `--eeg-mode`
    - call `generate_latents(...)`
@@ -581,7 +581,7 @@ Important current behavior:
 
 Latents are decoded by:
 
-1. `AudioLDM2MusicEncoderWrapper.decode_latents_to_mel()`
+1. `AudioLDM2VAEWrapper.decode_latents_to_mel()`
 2. `pipe.mel_spectrogram_to_waveform()`
 
 The wrapper transposes latent spatial axes before VAE decode:
@@ -753,9 +753,9 @@ The repo first converts raw participant EEG into per-song tensors, then chunks t
 - `SubjectAdapter` modifies EEG based on subject identity.
 - `EEGProjector` converts EEG from `[B, C, T]` into latent-grid tensors.
 - `EEGControlNet` transforms projected EEG into residuals aligned with the AudioLDM2 U-Net encoder/middle block.
-- `AudioLDMUNetWrapper` hosts the pretrained denoiser and text conditioning.
+- `AudioLDM2UNetWrapper` hosts the pretrained denoiser and text conditioning.
 - `EEGConditionedAudioLDM2` combines the above to predict diffusion noise.
-- `AudioLDM2MusicEncoderWrapper` provides the latent/audio boundary:
+- `AudioLDM2VAEWrapper` provides the latent/audio boundary:
   - audio -> latent for training cache
   - latent -> mel -> waveform for generation
 

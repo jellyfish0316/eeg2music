@@ -10,8 +10,8 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import models.audioldm2_wrapper as audio_wrapper_module
-from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
+import models.audioldm2_vae_wrapper as audio_wrapper_module
+from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 from utils.generation import generate_latents
 
 
@@ -142,7 +142,7 @@ class DummyModel:
 
 def test_decode_latents_and_audio_similarity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(audio_wrapper_module, "AudioLDM2Pipeline", FakeAudioPipeline)
-    wrapper = AudioLDM2MusicEncoderWrapper(
+    wrapper = AudioLDM2VAEWrapper(
         model_id="fake/audioldm2",
         sample_rate=16000,
         device="cpu",

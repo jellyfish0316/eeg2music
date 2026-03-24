@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 
 from datasets.condition_nmedt_dataset import ConditionNMEDTDataset
 from models.eeg_conditioned_audioldm2 import EEGConditionedAudioLDM2
-from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
+from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 from utils.loso import create_loso_subject_splits
 from utils.generation import batch_clap_similarity, generate_latents
 from utils.seed import set_seed
@@ -96,7 +96,7 @@ def derive_latent_grid(
     if dataset.z0_by_chunk is not None:
         return tuple(int(v) for v in dataset.z0_by_chunk.shape[1:])
 
-    encoder = AudioLDM2MusicEncoderWrapper(
+    encoder = AudioLDM2VAEWrapper(
         model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
         sample_rate=int(audio_cfg.get("sample_rate", data_cfg["audio_fs"])),
         device=str(device),
@@ -318,7 +318,7 @@ def evaluate_generation_clap(
     loader: DataLoader,
     device: torch.device,
     control_cfg: dict,
-    audio_helper: AudioLDM2MusicEncoderWrapper,
+    audio_helper: AudioLDM2VAEWrapper,
     *,
     sample_rate: int,
     num_inference_steps: int,
@@ -430,7 +430,7 @@ def run_one_condition(
     best_ckpt_path = output_dir / best_ckpt_name
     clap_helper = None
     if validation_metric == "clap":
-        clap_helper = AudioLDM2MusicEncoderWrapper(
+        clap_helper = AudioLDM2VAEWrapper(
             model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
             sample_rate=int(audio_cfg.get("sample_rate", data_cfg["audio_fs"])),
             device=str(device),

@@ -11,7 +11,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import torch
 
-from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
+from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 from scripts.train import build_condition_jobs, build_dataloader, build_model_from_dataset, load_config
 from utils.generation import generate_latents, save_waveforms
 from utils.loso import create_loso_subject_splits
@@ -104,7 +104,7 @@ def main() -> None:
 
     audio_cfg = cfg.get("audio_encoder", {})
     data_cfg = cfg["data"]
-    decoder = AudioLDM2MusicEncoderWrapper(
+    decoder = AudioLDM2VAEWrapper(
         model_id=audio_cfg.get("model_id", "cvssp/audioldm2-music"),
         sample_rate=int(audio_cfg.get("sample_rate", data_cfg["audio_fs"])),
         device=str(device),
