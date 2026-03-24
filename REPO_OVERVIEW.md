@@ -33,10 +33,10 @@ graph TD
     E --> F[AudioLDM2 VAE latent cache]
     C --> G[ConditionNMEDTDataset]
     F --> G
-    G --> H[EEGControlNetModel]
+    G --> H[EEGConditionedAudioLDM2]
     H --> I[SubjectAdapter]
     I --> J[EEGProjector]
-    J --> K[AudioLDMControlBranch]
+    J --> K[EEGControlNet]
     H --> L[Frozen AudioLDM2 U-Net]
     K --> L
     L --> M[Predicted diffusion noise]
@@ -68,10 +68,10 @@ graph LR
 ### Module interaction
 
 - `datasets/condition_nmedt_dataset.py` prepares aligned `(EEG chunk, audio chunk, subject_idx, z0)` samples.
-- `models/eeg_controlnet.py` is the top-level training/inference model.
+- `models/eeg_conditioned_audioldm2.py` is the top-level training/inference model.
 - `models/subject_adapter.py` optionally applies subject-specific affine modulation to EEG.
 - `models/eeg_projector.py` maps EEG `[B, C, T]` to latent grid `[B, C_latent, H, W]`.
-- `models/audioldm_control_branch.py` is a copied/modified ControlNet-like branch built from the pretrained U-Net encoder and middle block.
+- `models/eeg_controlnet.py` is a copied/modified ControlNet-like branch built from the pretrained U-Net encoder and middle block.
 - `models/audioldm_unet_wrapper.py` wraps the pretrained AudioLDM2 U-Net and text conditioning.
 - `models/audioldm2_wrapper.py` wraps AudioLDM2 VAE encode/decode and CLAP-audio feature extraction.
 - `utils/generation.py` performs latent generation and waveform decoding support.
@@ -225,11 +225,11 @@ Whether this matches the intended paper protocol cannot be concluded solely from
 
 ## 4. Model Architecture
 
-### 4.1 `EEGControlNetModel`
+### 4.1 `EEGConditionedAudioLDM2`
 
 File:
 
-- [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py)
+- [models/eeg_conditioned_audioldm2.py](/home/bryan/eeg/models/eeg_conditioned_audioldm2.py)
 
 Purpose:
 
@@ -306,11 +306,11 @@ Source classification:
 
 - fully custom
 
-### 4.4 `AudioLDMControlBranch`
+### 4.4 `EEGControlNet`
 
 File:
 
-- [models/audioldm_control_branch.py](/home/bryan/eeg/models/audioldm_control_branch.py)
+- [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py)
 
 Purpose:
 
@@ -440,13 +440,13 @@ From code alone, this is the similarity mechanism used for:
 
 ### `models/`
 
-- [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py)
+- [models/eeg_conditioned_audioldm2.py](/home/bryan/eeg/models/eeg_conditioned_audioldm2.py)
   - top-level train/inference model
 - [models/eeg_projector.py](/home/bryan/eeg/models/eeg_projector.py)
   - EEG-to-latent projection
 - [models/subject_adapter.py](/home/bryan/eeg/models/subject_adapter.py)
   - subject-specific modulation
-- [models/audioldm_control_branch.py](/home/bryan/eeg/models/audioldm_control_branch.py)
+- [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py)
   - ControlNet branch
 - [models/audioldm_unet_wrapper.py](/home/bryan/eeg/models/audioldm_unet_wrapper.py)
   - pretrained AudioLDM2 U-Net wrapper
@@ -496,7 +496,7 @@ These provide smoke/regression coverage, not a full scientific validation suite.
 The core training loop in `run_one_condition()` does:
 
 1. Build train/val/test datasets and loaders.
-2. Build `EEGControlNetModel`.
+2. Build `EEGConditionedAudioLDM2`.
 3. Freeze parameters according to `controlnet` config via `apply_freeze_policy()`.
 4. For each batch:
    - load `eeg`, `subject_idx`, and either `z0` or `audio`
@@ -511,7 +511,7 @@ The core training loop in `run_one_condition()` does:
 
 ### Loss
 
-Defined in [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py):
+Defined in [models/eeg_conditioned_audioldm2.py](/home/bryan/eeg/models/eeg_conditioned_audioldm2.py):
 
 - `loss = F.mse_loss(eps_pred.float(), noise.float())`
 
@@ -554,7 +554,7 @@ Important config blocks that directly affect training:
 
 1. Load config and resolve split.
 2. Build dataset and loader.
-3. Load `EEGControlNetModel` checkpoint.
+3. Load `EEGConditionedAudioLDM2` checkpoint.
 4. Build `AudioLDM2MusicEncoderWrapper` for decoding.
 5. For each batch:
    - optionally replace EEG with zero/random depending on `--eeg-mode`
@@ -752,9 +752,9 @@ The repo first converts raw participant EEG into per-song tensors, then chunks t
 
 - `SubjectAdapter` modifies EEG based on subject identity.
 - `EEGProjector` converts EEG from `[B, C, T]` into latent-grid tensors.
-- `AudioLDMControlBranch` transforms projected EEG into residuals aligned with the AudioLDM2 U-Net encoder/middle block.
+- `EEGControlNet` transforms projected EEG into residuals aligned with the AudioLDM2 U-Net encoder/middle block.
 - `AudioLDMUNetWrapper` hosts the pretrained denoiser and text conditioning.
-- `EEGControlNetModel` combines the above to predict diffusion noise.
+- `EEGConditionedAudioLDM2` combines the above to predict diffusion noise.
 - `AudioLDM2MusicEncoderWrapper` provides the latent/audio boundary:
   - audio -> latent for training cache
   - latent -> mel -> waveform for generation

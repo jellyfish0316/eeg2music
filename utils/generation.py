@@ -7,10 +7,10 @@ import soundfile as sf
 import torch
 
 from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
-from models.eeg_controlnet import EEGControlNetModel
+from models.eeg_conditioned_audioldm2 import EEGConditionedAudioLDM2
 
 
-def get_scheduler_from_model(model: EEGControlNetModel):
+def get_scheduler_from_model(model: EEGConditionedAudioLDM2):
     pipe = getattr(model.control_unet, "pipeline", None)
     if pipe is None or not hasattr(pipe, "scheduler"):
         raise RuntimeError("The pretrained U-Net wrapper must keep a live pipeline with a scheduler for generation.")
@@ -18,7 +18,7 @@ def get_scheduler_from_model(model: EEGControlNetModel):
 
 
 def _prepare_official_latents(
-    model: EEGControlNetModel,
+    model: EEGConditionedAudioLDM2,
     *,
     batch_size: int,
     device: torch.device,
@@ -45,7 +45,7 @@ def _prepare_official_latents(
 
 @torch.no_grad()
 def _generate_latents_official_backbone(
-    model: EEGControlNetModel,
+    model: EEGConditionedAudioLDM2,
     *,
     batch_size: int,
     device: torch.device,
@@ -111,7 +111,7 @@ def _generate_latents_official_backbone(
 
 @torch.no_grad()
 def generate_latents(
-    model: EEGControlNetModel,
+    model: EEGConditionedAudioLDM2,
     *,
     eeg: torch.Tensor,
     subject_idx: torch.Tensor,

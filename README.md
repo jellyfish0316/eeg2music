@@ -72,9 +72,9 @@ Because of that, proposal assumptions may differ from the original paper in subj
 - [scripts/generate.py](/home/bryan/eeg/scripts/generate.py): decode EEG-conditioned latents into `.wav` files
 - [scripts/evaluate_generation.py](/home/bryan/eeg/scripts/evaluate_generation.py): CLAP audio-similarity evaluation over generated vs target audio
 - [scripts/prepare_nmedt_raw.py](/home/bryan/eeg/scripts/prepare_nmedt_raw.py): inspect raw NMED-T MATLAB v7.3 files and convert them into song-level `.mat` files
-- [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py): main model
+- [models/eeg_conditioned_audioldm2.py](/home/bryan/eeg/models/eeg_conditioned_audioldm2.py): main model (`EEGConditionedAudioLDM2`)
 - [models/eeg_projector.py](/home/bryan/eeg/models/eeg_projector.py): paper-style EEG projector
-- [models/audioldm_control_branch.py](/home/bryan/eeg/models/audioldm_control_branch.py): ControlNet adapter branch
+- [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py): ControlNet adapter branch (`EEGControlNet`)
 - [models/audioldm2_wrapper.py](/home/bryan/eeg/models/audioldm2_wrapper.py): AudioLDM2 VAE wrapper and latent-shape introspection
 - [datasets/condition_nmedt_dataset.py](/home/bryan/eeg/datasets/condition_nmedt_dataset.py): condition-aware EEG dataset
 - [tests/test_paper_alignment_smoke.py](/home/bryan/eeg/tests/test_paper_alignment_smoke.py): smoke and regression tests
@@ -370,7 +370,7 @@ Reason: `[8, 16, 87]` is a common observed result for `AudioLDM2-music`, but it 
 - A linear remap exists in the projector as a fallback, not as the primary architecture.
 Reason: the paper's intended design is `1D conv -> reshape`; the fallback only prevents training from breaking when temporal length does not land exactly on the checkpoint-derived latent grid.
 
-- The ControlNet branch in [audioldm_control_branch.py](/home/bryan/eeg/models/audioldm_control_branch.py) deep-copies the pretrained diffusers AudioLDM2 U-Net encoder path and middle block, then adds zero-initialized 1x1 convolutions.
+- The ControlNet branch in [eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py) deep-copies the pretrained diffusers AudioLDM2 U-Net encoder path and middle block, then adds zero-initialized 1x1 convolutions.
 Reason: this keeps the runtime backbone tied to actual pretrained weights instead of an architecture-only reimplementation.
 
 - Middle-block injection is configurable through `controlnet.inject_middle_block`, but defaults to enabled.

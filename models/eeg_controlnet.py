@@ -1,296 +1,241 @@
 from __future__ import annotations
 
+import copy
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-from .audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
-from .audioldm_control_branch import AudioLDMControlBranch
-from .audioldm_unet_wrapper import AudioLDMUNetWrapper
-from .eeg_projector import EEGProjector
-from .subject_adapter import SubjectAdapter
 
 
-class EEGControlNetModel(nn.Module):
+def zero_module(module: nn.Module) -> nn.Module:
+    for p in module.parameters():
+        nn.init.zeros_(p)
+    return module
+
+
+class EEGControlNet(nn.Module):
     def __init__(
         self,
-        eeg_channels: int,
-        num_subjects: int,
-        device: torch.device | str | None = None,
-        model_dtype: torch.dtype | None = None,
-        use_subject_adapter: bool = True,
-        subject_emb_dim: int = 64,
-        audio_model_id: str = "cvssp/audioldm2-music",
-        audio_sample_rate: int = 16000,
-        audio_freeze_vae: bool = True,
-        audio_use_mode: bool = False,
-        text_prompt: str = "Pop music",
-        text_cache_path: str | None = None,
-        enable_audio_encoder: bool = True,
-        latent_channels: int | None = None,
-        latent_grid: tuple[int, int, int] | None = None,
-        projector_channels: tuple[int, ...] = (256, 512, 1024, 2048),
-        projector_strides: tuple[int, ...] = (5, 2, 2, 2),
-        projector_use_linear_fallback: bool = True,
-        diffusion_num_steps: int = 1000,
-        diffusion_beta_start: float = 1e-4,
-        diffusion_beta_end: float = 2e-2,
-        unet_cache_pipeline: bool = True,
-        controlnet_enabled: bool = False,
-        controlnet_zero_init: bool = True,
-        controlnet_scale: float = 1.0,
-        controlnet_copy_encoder_weights: bool = True,
-        controlnet_inject_middle_block: bool = True,
+        *,
+        conv_in: nn.Module,
+        down_blocks: nn.ModuleList,
+        mid_block: nn.Module,
+        time_proj: nn.Module,
+        time_embedding: nn.Module,
+        latent_channels: int,
+        latent_hw: tuple[int, int],
+        cross_attention_dims: tuple[int, int | None],
+        input_block_channels: list[int],
+        middle_block_channel: int,
+        zero_init: bool = True,
+        inject_middle_block: bool = True,
     ) -> None:
         super().__init__()
-        if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device = torch.device(device)
-        if model_dtype is None:
-            model_dtype = torch.float16 if device.type == "cuda" else torch.float32
-        self.model_dtype = model_dtype
-
-        self.use_subject_adapter = bool(use_subject_adapter)
-        if self.use_subject_adapter:
-            self.subject_adapter = SubjectAdapter(
-                num_subjects=num_subjects,
-                eeg_channels=eeg_channels,
-                emb_dim=subject_emb_dim,
-            )
-
-        self.audio_encoder: AudioLDM2MusicEncoderWrapper | None = None
-        inferred_latent_channels = None
-        if enable_audio_encoder:
-            self.audio_encoder = AudioLDM2MusicEncoderWrapper(
-                model_id=audio_model_id,
-                sample_rate=audio_sample_rate,
-                device=str(device),
-                dtype=self.model_dtype,
-                freeze_vae=audio_freeze_vae,
-                use_mode=audio_use_mode,
-            )
-            inferred_latent_channels = getattr(self.audio_encoder.vae.config, "latent_channels", None)
-
-        if latent_channels is None:
-            if inferred_latent_channels is None:
-                raise ValueError("latent_channels is None and could not be inferred from VAE config.")
-            latent_channels = int(inferred_latent_channels)
-        elif inferred_latent_channels is not None and int(inferred_latent_channels) != int(latent_channels):
-            raise ValueError(
-                f"latent_channels={latent_channels} does not match VAE latent_channels={int(inferred_latent_channels)}"
-            )
+        self.conv_in = copy.deepcopy(conv_in)
+        self.down_blocks = copy.deepcopy(down_blocks)
+        self.mid_block = copy.deepcopy(mid_block)
+        self.time_proj = copy.deepcopy(time_proj)
+        self.time_embedding = copy.deepcopy(time_embedding)
         self.latent_channels = int(latent_channels)
+        self.latent_hw = (int(latent_hw[0]), int(latent_hw[1]))
+        self.cross_attention_dims = (
+            int(cross_attention_dims[0]),
+            None if cross_attention_dims[1] is None else int(cross_attention_dims[1]),
+        )
+        self.inject_middle_block = bool(inject_middle_block)
 
-        if latent_grid is None:
-            raise ValueError("latent_grid must be checkpoint-derived before model construction.")
-        self.latent_grid = tuple(int(v) for v in latent_grid)
-        if len(self.latent_grid) != 3:
-            raise ValueError(f"Expected latent_grid=(C,H,W), got {self.latent_grid}")
-        if self.latent_grid[0] != self.latent_channels:
-            raise ValueError(
-                f"latent_grid channel dimension ({self.latent_grid[0]}) does not match latent_channels ({self.latent_channels})"
-            )
-
-        self.projector = EEGProjector(
-            in_channels=eeg_channels,
-            conv_channels=projector_channels,
-            strides=projector_strides,
-            latent_grid=self.latent_grid,
-            use_linear_fallback=projector_use_linear_fallback,
+        conv_builder = zero_module if zero_init else (lambda m: m)
+        self.down_zero_convs = nn.ModuleList(
+            [conv_builder(nn.Conv2d(int(ch), int(ch), kernel_size=1)) for ch in input_block_channels]
+        )
+        self.mid_zero_conv = conv_builder(
+            nn.Conv2d(int(middle_block_channel), int(middle_block_channel), kernel_size=1)
         )
 
-        self.control_unet = AudioLDMUNetWrapper(
-            model_id=audio_model_id,
+        inferred_count = len(self._infer_residual_shapes())
+        if inferred_count != len(self.down_zero_convs):
+            raise RuntimeError(
+                "Control branch residual count does not match pretrained U-Net injection sites "
+                f"(got {inferred_count}, expected {len(self.down_zero_convs)})."
+            )
+
+        ref_param = next(self.conv_in.parameters())
+        self.to(device=ref_param.device)
+        self.float()
+
+    def _default_encoder_hidden_state(
+        self,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        width: int,
+    ) -> torch.Tensor:
+        return torch.zeros(
+            batch_size,
+            1,
+            width,
             device=device,
-            dtype=self.model_dtype,
-            cache_pipeline=bool(unet_cache_pipeline),
-            text_prompt=text_prompt,
-            text_cache_path=text_cache_path,
+            dtype=dtype,
         )
-        unet_in_channels = getattr(self.control_unet.config, "in_channels", None)
-        unet_out_channels = getattr(self.control_unet.config, "out_channels", None)
-        if unet_in_channels is not None and int(unet_in_channels) != self.latent_channels:
-            raise ValueError(
-                f"Pretrained U-Net in_channels ({int(unet_in_channels)}) do not match latent_channels ({self.latent_channels})."
-            )
-        if unet_out_channels is not None and int(unet_out_channels) != self.latent_channels:
-            raise ValueError(
-                f"Pretrained U-Net out_channels ({int(unet_out_channels)}) do not match latent_channels ({self.latent_channels})."
-            )
 
-        self.controlnet_enabled = bool(controlnet_enabled)
-        self.default_control_scale = float(controlnet_scale)
-        self.control_branch: AudioLDMControlBranch | None = None
-        if self.controlnet_enabled:
-            if not bool(controlnet_copy_encoder_weights):
-                raise ValueError("Paper-aligned ControlNet requires copy_encoder_weights=True.")
-            specs = self.control_unet.control_specs
-            control_modules = self.control_unet.get_control_modules()
-            self.control_branch = AudioLDMControlBranch(
-                conv_in=control_modules["conv_in"],
-                down_blocks=control_modules["down_blocks"],
-                mid_block=control_modules["mid_block"],
-                time_proj=self.control_unet.get_time_proj(),
-                time_embedding=self.control_unet.get_time_embedding(),
-                latent_channels=self.latent_channels,
-                latent_hw=(self.latent_grid[1], self.latent_grid[2]),
-                cross_attention_dims=self.control_unet.get_cross_attention_dims(),
-                input_block_channels=specs["input_block_channels"],
-                middle_block_channel=specs["middle_block_channel"],
-                zero_init=controlnet_zero_init,
-                inject_middle_block=controlnet_inject_middle_block,
-            )
-
-        self.num_train_timesteps = int(diffusion_num_steps)
-        betas = torch.linspace(
-            diffusion_beta_start,
-            diffusion_beta_end,
-            self.num_train_timesteps,
-            dtype=torch.float32,
-        )
-        alphas = 1.0 - betas
-        alphas_cumprod = torch.cumprod(alphas, dim=0)
-        self.register_buffer("betas", betas, persistent=False)
-        self.register_buffer("alphas_cumprod", alphas_cumprod, persistent=False)
-        self.register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod), persistent=False)
-        self.register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - alphas_cumprod), persistent=False)
-
-    def sample_timesteps(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        return torch.randint(0, self.num_train_timesteps, (batch_size,), device=device, dtype=torch.long)
-
-    def q_sample(
+    def _compute_temporal_embedding(
         self,
-        z0: torch.Tensor,
         timesteps: torch.Tensor,
-        noise: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if noise is None:
-            noise = torch.randn_like(z0)
-        noise = noise.to(dtype=z0.dtype)
-        sqrt_alpha_t = self.sqrt_alphas_cumprod[timesteps][:, None, None, None].to(dtype=z0.dtype)
-        sqrt_one_minus_alpha_t = self.sqrt_one_minus_alphas_cumprod[timesteps][:, None, None, None].to(dtype=z0.dtype)
-        zt = sqrt_alpha_t * z0 + sqrt_one_minus_alpha_t * noise
-        return zt, noise
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        timestep_proj = self.time_proj(timesteps)
+        time_embed_dtype = next(self.time_embedding.parameters()).dtype
+        timestep_proj = timestep_proj.to(dtype=time_embed_dtype)
+        temb = self.time_embedding(timestep_proj)
+        return temb.to(dtype=dtype)
 
-    def predict_noise(
+    def _run_down_block(
         self,
-        eeg: torch.Tensor,
-        subject_idx: torch.Tensor,
-        zt: torch.Tensor,
-        timesteps: torch.Tensor,
-        control_scale: float | None = None,
-        use_control: bool = True,
-        text_conditioning: dict[str, torch.Tensor | None] | None = None,
-    ) -> dict[str, torch.Tensor | dict[str, object] | None]:
-        if zt.dim() != 4:
-            raise RuntimeError(f"Expected zt to be 4D [B,C,H,W], got {tuple(zt.shape)}")
-        if zt.shape[1] != self.latent_channels:
-            raise RuntimeError(f"zt channels ({zt.shape[1]}) != model latent_channels ({self.latent_channels})")
-
-        if self.use_subject_adapter:
-            eeg = self.subject_adapter(eeg, subject_idx)
-
-        unet_dtype = self.control_unet.dtype
-        zt = zt.to(dtype=unet_dtype)
-        projected_latent = self.projector(eeg).to(dtype=unet_dtype)
-        if text_conditioning is None:
-            encoder_state_dict = self.control_unet.get_text_conditioning(
-                batch_size=zt.shape[0],
-                device=zt.device,
-                dtype=unet_dtype,
+        block: nn.Module,
+        hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        encoder_hidden_states_1: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
+        if bool(getattr(block, "has_cross_attention", False)):
+            return block(
+                hidden_states=hidden_states,
+                temb=temb,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_hidden_states_1=encoder_hidden_states_1,
             )
-        else:
-            encoder_state_dict = {
-                "encoder_hidden_states": None
-                if text_conditioning.get("encoder_hidden_states") is None
-                else text_conditioning["encoder_hidden_states"].to(device=zt.device, dtype=unet_dtype),
-                "encoder_hidden_states_1": None
-                if text_conditioning.get("encoder_hidden_states_1") is None
-                else text_conditioning["encoder_hidden_states_1"].to(device=zt.device, dtype=unet_dtype),
-                "attention_mask": None
-                if text_conditioning.get("attention_mask") is None
-                else text_conditioning["attention_mask"].to(device=zt.device),
-            }
+        return block(hidden_states=hidden_states, temb=temb)
 
-        use_control = bool(use_control and self.controlnet_enabled)
-        control_residuals = None
-        if use_control:
-            if self.control_branch is None:
-                raise RuntimeError("controlnet_enabled=True but control_branch is missing.")
-            control_residuals = self.control_branch(
-                zt=zt,
-                projected_latent=projected_latent,
-                timesteps=timesteps,
-                encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
-                encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
+    def _run_mid_block(
+        self,
+        hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        encoder_hidden_states_1: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if bool(getattr(self.mid_block, "has_cross_attention", False)):
+            return self.mid_block(
+                hidden_states=hidden_states,
+                temb=temb,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_hidden_states_1=encoder_hidden_states_1,
             )
+        return self.mid_block(hidden_states=hidden_states, temb=temb)
 
-        eps_pred = self.control_unet(
-            x=zt,
-            timesteps=timesteps,
-            encoder_hidden_states=encoder_state_dict["encoder_hidden_states"],
-            encoder_hidden_states_1=encoder_state_dict["encoder_hidden_states_1"],
-            attention_mask=encoder_state_dict["attention_mask"],
-            control_residuals=control_residuals,
-            control_scale=self.default_control_scale if control_scale is None else float(control_scale),
+    def _infer_residual_shapes(self) -> list[tuple[int, int, int]]:
+        device = next(self.conv_in.parameters()).device
+        dtype = next(self.conv_in.parameters()).dtype
+        hidden_states = torch.zeros(
+            1,
+            self.latent_channels,
+            self.latent_hw[0],
+            self.latent_hw[1],
+            device=device,
+            dtype=dtype,
         )
-        return {
-            "zt": zt,
-            "projected_latent": projected_latent,
-            "eps_pred": eps_pred,
-            "control_residuals": control_residuals,
-            "use_control": torch.tensor(use_control, device=zt.device),
-        }
+        timesteps = torch.zeros(1, device=device, dtype=torch.long)
+        encoder_hidden_states = self._default_encoder_hidden_state(
+            batch_size=1,
+            device=device,
+            dtype=dtype,
+            width=self.cross_attention_dims[0],
+        )
+        encoder_hidden_states_1 = None
+        if self.cross_attention_dims[1] is not None:
+            encoder_hidden_states_1 = self._default_encoder_hidden_state(
+                batch_size=1,
+                device=device,
+                dtype=dtype,
+                width=self.cross_attention_dims[1],
+            )
+        temb = self._compute_temporal_embedding(timesteps, dtype=dtype)
+
+        hidden_states = self.conv_in(hidden_states)
+        residuals = [tuple(int(v) for v in hidden_states.shape[1:])]
+
+        for block in self.down_blocks:
+            hidden_states, res_samples = self._run_down_block(
+                block=block,
+                hidden_states=hidden_states,
+                temb=temb,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_hidden_states_1=encoder_hidden_states_1,
+            )
+            residuals.extend(tuple(int(v) for v in sample.shape[1:]) for sample in res_samples)
+
+        return residuals
 
     def forward(
         self,
-        eeg: torch.Tensor,
-        subject_idx: torch.Tensor,
-        audio: torch.Tensor | None = None,
-        z0: torch.Tensor | None = None,
-        timesteps: torch.Tensor | None = None,
-        noise: torch.Tensor | None = None,
-        control_scale: float | None = None,
-        use_control: bool = True,
-    ) -> dict[str, torch.Tensor | dict[str, object] | None]:
-        if z0 is None:
-            if audio is None:
-                raise ValueError("Either z0 or audio must be provided.")
-            if self.audio_encoder is None:
-                raise RuntimeError("audio_encoder is disabled but audio was provided.")
-            z0 = self.audio_encoder(audio)
-
-        if z0.dim() != 4:
-            raise RuntimeError(f"Expected z0 to be 4D [B,C,H,W], got {tuple(z0.shape)}")
-        if z0.shape[1] != self.latent_channels:
-            raise RuntimeError(f"z0 channels ({z0.shape[1]}) != model latent_channels ({self.latent_channels})")
-        unet_dtype = self.control_unet.dtype
-        z0 = z0.to(dtype=unet_dtype)
-
-        if timesteps is None:
-            timesteps = self.sample_timesteps(batch_size=z0.shape[0], device=z0.device)
-        if timesteps.shape != (z0.shape[0],):
-            raise RuntimeError(f"Expected timesteps {(z0.shape[0],)}, got {tuple(timesteps.shape)}")
-
-        zt, noise = self.q_sample(z0, timesteps=timesteps, noise=noise)
-        pred = self.predict_noise(
-            eeg=eeg,
-            subject_idx=subject_idx,
-            zt=zt,
-            timesteps=timesteps,
-            control_scale=control_scale,
-            use_control=use_control,
+        zt: torch.Tensor,
+        projected_latent: torch.Tensor,
+        timesteps: torch.Tensor,
+        encoder_hidden_states: torch.Tensor | None = None,
+        encoder_hidden_states_1: torch.Tensor | None = None,
+    ) -> dict[str, object]:
+        branch_dtype = next(self.conv_in.parameters()).dtype
+        hidden_states = (zt + projected_latent).to(
+            device=next(self.conv_in.parameters()).device,
+            dtype=branch_dtype,
         )
-        eps_pred = pred["eps_pred"]
-        loss = F.mse_loss(eps_pred.float(), noise.float())
+        if encoder_hidden_states is None:
+            encoder_hidden_states = self._default_encoder_hidden_state(
+                batch_size=hidden_states.shape[0],
+                device=hidden_states.device,
+                dtype=branch_dtype,
+                width=self.cross_attention_dims[0],
+            )
+        else:
+            encoder_hidden_states = encoder_hidden_states.to(
+                device=hidden_states.device,
+                dtype=branch_dtype,
+            )
+        if self.cross_attention_dims[1] is None:
+            encoder_hidden_states_1 = None
+        elif encoder_hidden_states_1 is None:
+            encoder_hidden_states_1 = self._default_encoder_hidden_state(
+                batch_size=hidden_states.shape[0],
+                device=hidden_states.device,
+                dtype=branch_dtype,
+                width=self.cross_attention_dims[1],
+            )
+        else:
+            encoder_hidden_states_1 = encoder_hidden_states_1.to(
+                device=hidden_states.device,
+                dtype=branch_dtype,
+            )
+
+        temb = self._compute_temporal_embedding(
+            timesteps.to(device=hidden_states.device),
+            dtype=branch_dtype,
+        )
+
+        down_block_residuals = []
+        hidden_states = self.conv_in(hidden_states)
+        down_block_residuals.append(self.down_zero_convs[0](hidden_states))
+
+        residual_index = 1
+        for block in self.down_blocks:
+            hidden_states, res_samples = self._run_down_block(
+                block=block,
+                hidden_states=hidden_states,
+                temb=temb,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_hidden_states_1=encoder_hidden_states_1,
+            )
+            for sample in res_samples:
+                down_block_residuals.append(self.down_zero_convs[residual_index](sample))
+                residual_index += 1
+
+        hidden_states = self._run_mid_block(
+            hidden_states=hidden_states,
+            temb=temb,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_hidden_states_1=encoder_hidden_states_1,
+        )
+        mid_block_residual = (
+            self.mid_zero_conv(hidden_states) if self.inject_middle_block else None
+        )
         return {
-            "loss": loss,
-            "z0": z0,
-            "zt": pred["zt"],
-            "timesteps": timesteps,
-            "noise": noise,
-            "projected_latent": pred["projected_latent"],
-            "eps_pred": eps_pred,
-            "control_residuals": pred["control_residuals"],
-            "use_control": pred["use_control"],
+            "down_block_residuals": tuple(down_block_residuals),
+            "mid_block_residual": mid_block_residual,
         }

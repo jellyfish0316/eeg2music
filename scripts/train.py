@@ -15,7 +15,7 @@ import yaml
 from torch.utils.data import DataLoader
 
 from datasets.condition_nmedt_dataset import ConditionNMEDTDataset
-from models.eeg_controlnet import EEGControlNetModel
+from models.eeg_conditioned_audioldm2 import EEGConditionedAudioLDM2
 from models.audioldm2_wrapper import AudioLDM2MusicEncoderWrapper
 from utils.loso import create_loso_subject_splits
 from utils.generation import batch_clap_similarity, generate_latents
@@ -59,7 +59,7 @@ def _set_trainable(module: torch.nn.Module | None, enabled: bool) -> int:
     return c
 
 
-def apply_freeze_policy(model: EEGControlNetModel, control_cfg: dict) -> dict[str, int]:
+def apply_freeze_policy(model: EEGConditionedAudioLDM2, control_cfg: dict) -> dict[str, int]:
     if not bool(control_cfg.get("enabled", False)):
         return {"total_trainable": sum(p.numel() for p in model.parameters() if p.requires_grad)}
     if not bool(control_cfg.get("freeze_base_unet", True)):
@@ -183,7 +183,7 @@ def build_model_from_dataset(
     *,
     dataset: ConditionNMEDTDataset,
     device: torch.device,
-) -> EEGControlNetModel:
+) -> EEGConditionedAudioLDM2:
     def resolve_model_dtype(value: object | None) -> torch.dtype:
         if value is None:
             return torch.float16 if device.type == "cuda" else torch.float32
@@ -221,7 +221,7 @@ def build_model_from_dataset(
         latent_channels = int(dataset.z0_by_chunk.shape[1])
     latent_grid = derive_latent_grid(cfg, dataset=dataset, device=device)
 
-    model = EEGControlNetModel(
+    model = EEGConditionedAudioLDM2(
         eeg_channels=int(dataset.eeg_out_channels),
         num_subjects=int(dataset.total_subjects),
         model_dtype=resolve_model_dtype(train_cfg.get("model_dtype")),
@@ -265,7 +265,7 @@ def build_model_from_dataset(
 
 @torch.no_grad()
 def evaluate_loss(
-    model: EEGControlNetModel,
+    model: EEGConditionedAudioLDM2,
     loader: DataLoader,
     device: torch.device,
     control_cfg: dict,
@@ -314,7 +314,7 @@ def evaluate_loss(
 
 @torch.no_grad()
 def evaluate_generation_clap(
-    model: EEGControlNetModel,
+    model: EEGConditionedAudioLDM2,
     loader: DataLoader,
     device: torch.device,
     control_cfg: dict,

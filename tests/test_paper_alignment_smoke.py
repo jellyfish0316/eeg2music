@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import models.audioldm_unet_wrapper as unet_wrapper_module
 from models.eeg_projector import EEGProjector
-from models.eeg_controlnet import EEGControlNetModel
+from models.eeg_conditioned_audioldm2 import EEGConditionedAudioLDM2
 from scripts.train import apply_freeze_policy, derive_latent_grid, validate_model_config
 
 
@@ -296,9 +296,9 @@ def build_test_model(
     monkeypatch: pytest.MonkeyPatch,
     *,
     text_cache_path: str | None = None,
-) -> EEGControlNetModel:
+) -> EEGConditionedAudioLDM2:
     install_fake_pipeline(monkeypatch)
-    return EEGControlNetModel(
+    return EEGConditionedAudioLDM2(
         eeg_channels=12,
         num_subjects=5,
         device="cpu",
