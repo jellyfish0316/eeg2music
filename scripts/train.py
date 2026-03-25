@@ -419,6 +419,9 @@ def run_one_condition(
     epochs = int(train_cfg["epochs"])
     log_every = int(train_cfg.get("log_every", 10))
     grad_clip = float(train_cfg.get("grad_clip", 1.0))
+    gradient_accumulation_steps = int(train_cfg.get("gradient_accumulation_steps", 1))
+    if gradient_accumulation_steps < 1:
+        raise ValueError("train.gradient_accumulation_steps must be >= 1")
     validation_metric = str(train_cfg.get("validation_metric", "loss")).lower()
     validation_generate_batches = train_cfg.get("validation_generate_batches", None)
     if validation_generate_batches is not None:
@@ -443,6 +446,7 @@ def run_one_condition(
     for epoch in range(epochs):
         model.train()
         running = []
+        optimizer.zero_grad()
         for step, batch in enumerate(dl_train):
             if max_steps is not None and step >= max_steps:
                 break
@@ -480,10 +484,13 @@ def run_one_condition(
                     f"projected_finite={bool(torch.isfinite(out['projected_latent']).all().item())} "
                     f"eps_pred_finite={bool(torch.isfinite(out['eps_pred']).all().item())}"
                 )
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            optimizer.step()
+            (loss / float(gradient_accumulation_steps)).backward()
+            should_step = ((step + 1) % gradient_accumulation_steps == 0)
+            is_last_step = (step + 1 == len(dl_train)) or (max_steps is not None and (step + 1) == max_steps)
+            if should_step or is_last_step:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                optimizer.zero_grad()
             running.append(float(loss.item()))
 
             if step % log_every == 0:
