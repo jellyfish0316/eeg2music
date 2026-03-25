@@ -72,10 +72,10 @@ data:
   #     mat_path: data/EEG/song21_Imputed.mat
   #     data_key: data21
   
-  eeg_time: 437
+  eeg_time: 3500
   audio_samples: 56000
   chunk_sec: 3.5
-  eeg_fs: 125
+  eeg_fs: 1000
   audio_fs: 16000
   batch_size: 12
   num_workers: 4
