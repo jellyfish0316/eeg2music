@@ -77,8 +77,8 @@ data:
   chunk_sec: 3.5
   eeg_fs: 1000
   audio_fs: 16000
-  batch_size: 12
-  num_workers: 4
+  batch_size: 4
+  num_workers: 0
   text_prompt: "Pop music"
 
 
@@ -141,7 +141,7 @@ train:
   model_dtype: float32
   lr: 0.0001
   epochs: 20
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 4
   grad_clip: 1.0
   log_every: 10
   validation_metric: clap
