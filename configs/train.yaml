@@ -149,5 +149,5 @@ train:
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
   run_mode: single_fold
-  output_root: outputs/paperaligned_v4
+  output_root: outputs/paperaligned_smoke_v4
   checkpoint_name: model.pt
