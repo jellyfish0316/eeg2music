@@ -41,6 +41,7 @@ class EEGConditionedAudioLDM2(nn.Module):
         controlnet_scale: float = 1.0,
         controlnet_copy_encoder_weights: bool = True,
         controlnet_inject_middle_block: bool = True,
+        controlnet_conditioning_mode: str = "repo",
     ) -> None:
         super().__init__()
         if device is None:
@@ -139,6 +140,7 @@ class EEGConditionedAudioLDM2(nn.Module):
                 middle_block_channel=specs["middle_block_channel"],
                 zero_init=controlnet_zero_init,
                 inject_middle_block=controlnet_inject_middle_block,
+                conditioning_mode=controlnet_conditioning_mode,
             )
 
         self.num_train_timesteps = int(diffusion_num_steps)

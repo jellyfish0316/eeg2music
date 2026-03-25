@@ -249,6 +249,7 @@ def build_model_from_dataset(
         controlnet_scale=float(control_cfg.get("control_scale", 1.0)),
         controlnet_copy_encoder_weights=bool(control_cfg.get("copy_encoder_weights", True)),
         controlnet_inject_middle_block=bool(control_cfg.get("inject_middle_block", True)),
+        controlnet_conditioning_mode=str(control_cfg.get("conditioning_mode", "repo")),
     ).to(device)
     with torch.no_grad():
         dummy_eeg = torch.zeros(

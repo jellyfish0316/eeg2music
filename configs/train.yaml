@@ -107,12 +107,16 @@ controlnet:
   copy_encoder_weights: true
   inject_middle_block: true
   zero_init: true
+  # conditioning_mode options:
+  # repo: following the controlnet's repo and paper, putting zero conv on conditioning
+  # paper: following the eeg paper, putting zero conv on zt
+  conditioning_mode: paper
   trainable_modules:
     - subject_adapter
     - projector
     - control_branch
 
-latent_cache:
+latent_cache: 
   enabled: true
   path: data/precomputed/nmedt_multisong_audioldm2_latents_logmel_v3_paper_split.pt
   latent_channels: 8

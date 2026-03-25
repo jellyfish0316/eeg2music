@@ -28,6 +28,7 @@ class EEGControlNet(nn.Module):
         middle_block_channel: int,
         zero_init: bool = True,
         inject_middle_block: bool = True,
+        conditioning_mode: str = "repo",
     ) -> None:
         super().__init__()
         self.conv_in = copy.deepcopy(conv_in)
@@ -42,14 +43,26 @@ class EEGControlNet(nn.Module):
             None if cross_attention_dims[1] is None else int(cross_attention_dims[1]),
         )
         self.inject_middle_block = bool(inject_middle_block)
+        self.conditioning_mode = str(conditioning_mode)
+        if self.conditioning_mode not in {"repo", "paper"}:
+            raise ValueError(
+                f"Unsupported conditioning_mode={self.conditioning_mode!r}. Expected 'repo' or 'paper'."
+            )
 
         conv_builder = zero_module if zero_init else (lambda m: m)
         first_block_channel = int(input_block_channels[0])
-        self.input_hint_block = nn.Sequential(
-            nn.Conv2d(self.latent_channels, first_block_channel, kernel_size=3, padding=1),
-            nn.SiLU(),
-            conv_builder(nn.Conv2d(first_block_channel, first_block_channel, kernel_size=3, padding=1)),
-        )
+        self.input_hint_block = None
+        self.cin = None
+        if self.conditioning_mode == "repo":
+            self.input_hint_block = nn.Sequential(
+                nn.Conv2d(self.latent_channels, first_block_channel, kernel_size=3, padding=1),
+                nn.SiLU(),
+                conv_builder(nn.Conv2d(first_block_channel, first_block_channel, kernel_size=3, padding=1)),
+            )
+        else:
+            self.cin = conv_builder(
+                nn.Conv2d(self.latent_channels, self.latent_channels, kernel_size=1)
+            )
         self.down_zero_convs = nn.ModuleList(
             [conv_builder(nn.Conv2d(int(ch), int(ch), kernel_size=1)) for ch in input_block_channels]
         )
@@ -220,9 +233,17 @@ class EEGControlNet(nn.Module):
         )
 
         down_block_residuals = []
-        hidden_states = self.conv_in(zt)
-        guided_hint = self.input_hint_block(projected_latent)
-        hidden_states = hidden_states + guided_hint
+        if self.conditioning_mode == "repo":
+            if self.input_hint_block is None:
+                raise RuntimeError("conditioning_mode='repo' requires input_hint_block.")
+            hidden_states = self.conv_in(zt)
+            guided_hint = self.input_hint_block(projected_latent)
+            hidden_states = hidden_states + guided_hint
+        else:
+            if self.cin is None:
+                raise RuntimeError("conditioning_mode='paper' requires cin.")
+            hidden_states = self.cin(zt) + projected_latent
+            hidden_states = self.conv_in(hidden_states)
         down_block_residuals.append(self.down_zero_convs[0](hidden_states))
 
         residual_index = 1
