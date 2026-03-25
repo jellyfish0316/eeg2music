@@ -8,21 +8,37 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import yaml
+import librosa
+import numpy as np
+import soundfile as sf
 import torch
+import yaml
 
-from datasets.nmedt_dataset import NMEDTDataset
 from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 from utils.seed import set_seed
 
 
-def load_config(path: str):
+def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
+def load_audio(
+    *,
+    audio_path: str,
+    audio_fs: int,
+) -> np.ndarray:
+    audio, sr = sf.read(audio_path)
+    if audio.ndim == 2:
+        audio = audio.mean(axis=1)
+    audio = audio.astype(np.float32)
+    if sr != audio_fs:
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=audio_fs)
+    return audio.astype(np.float32)
+
+
 @torch.no_grad()
-def main():
+def main() -> None:
     cfg = load_config("configs/train.yaml")
     set_seed(cfg["seed"])
 
@@ -33,10 +49,10 @@ def main():
     output_path = latent_cfg.get("path", "data/precomputed/song21_audioldm2_latents.pt")
     batch_size = int(latent_cfg.get("precompute_batch_size", 16))
     use_mode = bool(latent_cfg.get("precompute_use_mode", True))
+    audio_fs = int(data_cfg["audio_fs"])
+    audio_chunk_len = int(float(data_cfg["chunk_sec"]) * audio_fs)
 
-    device = torch.device(
-        cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
-    )
+    device = torch.device(cfg["train"]["device"] if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type == "cuda" else torch.float32
 
     encoder = AudioLDM2VAEWrapper(
@@ -51,51 +67,44 @@ def main():
 
     songs_cfg = data_cfg.get("songs")
     if songs_cfg:
-        datasets = [
+        songs = [
             (
                 str(song.get("name", f"song_{idx:02d}")),
-                NMEDTDataset(
-                    mat_path=song.get("mat_path", data_cfg.get("mat_path", "data/EEG/song21_Imputed.mat")),
-                    audio_path=song["audio_path"],
-                    data_key=song.get("data_key", data_cfg.get("data_key", "data21")),
-                    chunk_sec=data_cfg["chunk_sec"],
-                    eeg_fs=data_cfg["eeg_fs"],
-                    audio_fs=data_cfg["audio_fs"],
-                    subjects=[0],
-                ),
+                str(song["audio_path"]),
             )
             for idx, song in enumerate(songs_cfg)
         ]
     else:
-        datasets = [
+        songs = [
             (
                 Path(str(data_cfg.get("audio_path", "data/songs/song21_16k.wav"))).stem,
-                NMEDTDataset(
-                    mat_path=data_cfg.get("mat_path", "data/EEG/song21_Imputed.mat"),
-                    audio_path=data_cfg.get("audio_path", "data/songs/song21_16k.wav"),
-                    data_key=data_cfg.get("data_key", "data21"),
-                    chunk_sec=data_cfg["chunk_sec"],
-                    eeg_fs=data_cfg["eeg_fs"],
-                    audio_fs=data_cfg["audio_fs"],
-                    subjects=[0],
-                ),
+                str(data_cfg.get("audio_path", "data/songs/song21_16k.wav")),
             )
         ]
 
     per_song_latents = []
     song_meta = []
-    for song_name, dataset in datasets:
+    for song_name, audio_path in songs:
+        audio = load_audio(audio_path=audio_path, audio_fs=audio_fs)
+        total = int(len(audio) // audio_chunk_len)
+        if total <= 0:
+            raise ValueError(
+                f"No usable chunks for {song_name}. audio_len={len(audio)} chunk_len={audio_chunk_len}"
+            )
+
         all_z0 = []
-        total = dataset.n_chunks
-        print(f"precompute start: song={song_name} chunks={total} batch_size={batch_size} device={device}", flush=True)
+        print(
+            f"precompute start: song={song_name} chunks={total} batch_size={batch_size} device={device}",
+            flush=True,
+        )
 
         for start in range(0, total, batch_size):
             end = min(start + batch_size, total)
             wav_batch = []
             for chunk_idx in range(start, end):
-                audio_start = chunk_idx * dataset.audio_chunk_len
-                audio_end = audio_start + dataset.audio_chunk_len
-                wav = dataset.audio[audio_start:audio_end]
+                audio_start = chunk_idx * audio_chunk_len
+                audio_end = audio_start + audio_chunk_len
+                wav = audio[audio_start:audio_end]
                 wav_batch.append(torch.tensor(wav, dtype=torch.float32))
             waveform = torch.stack(wav_batch, dim=0).to(device)
 
@@ -141,7 +150,11 @@ def main():
     if len(per_song_latents) == 1:
         print(f"saved latent cache -> {out} shape={tuple(per_song_latents[0].shape)}", flush=True)
     else:
-        print(f"saved multi-song latent cache -> {out} songs={len(per_song_latents)} latent_shape={tuple(per_song_latents[0].shape[1:])}", flush=True)
+        print(
+            f"saved multi-song latent cache -> {out} songs={len(per_song_latents)} "
+            f"latent_shape={tuple(per_song_latents[0].shape[1:])}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
