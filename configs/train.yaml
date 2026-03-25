@@ -80,6 +80,7 @@ data:
   batch_size: 2
   num_workers: 0
   text_prompt: "Pop music"
+  eeg_chunk_cache_dir: data/precomputed/eeg_chunks_1khz
 
 
 model:

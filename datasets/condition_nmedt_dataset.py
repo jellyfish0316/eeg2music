@@ -23,17 +23,26 @@ class EEGSource:
     mat_path: str
     data_key: str
     shape: tuple[int, int, int]  # [C, T, S]
+    chunk_cache_path: str | None = None
+    chunk_cache_shape: tuple[int, int, int, int] | None = None  # [S, N, C, T]
+    chunk_cache_subject_indices: tuple[int, ...] | None = None
 
     @property
     def n_channels(self) -> int:
+        if self.chunk_cache_shape is not None:
+            return int(self.chunk_cache_shape[2])
         return int(self.shape[0])
 
     @property
     def total_time(self) -> int:
+        if self.chunk_cache_shape is not None:
+            return int(self.chunk_cache_shape[1] * self.chunk_cache_shape[3])
         return int(self.shape[1])
 
     @property
     def total_subjects(self) -> int:
+        if self.chunk_cache_subject_indices is not None:
+            return int(len(self.chunk_cache_subject_indices))
         return int(self.shape[2])
 
 
@@ -116,6 +125,7 @@ class ConditionNMEDTDataset(Dataset):
         eeg_preprocessing: dict[str, Any] | None = None,
         precomputed_latents_path: str | None = None,
         chunk_range: tuple[float, float] | None = None,
+        eeg_chunk_cache_dir: str | None = None,
     ) -> None:
         super().__init__()
         if condition_type not in self.CONDITION_TO_ID:
@@ -144,6 +154,8 @@ class ConditionNMEDTDataset(Dataset):
         self._source_cache: dict[tuple[str, str], np.ndarray] = {}
         self._source_cache_order: list[tuple[str, str]] = []
         self._max_cached_sources = 1
+        self._chunk_cache_arrays: dict[str, np.ndarray] = {}
+        self._chunk_cache_manifest = self._load_eeg_chunk_cache_manifest(eeg_chunk_cache_dir)
 
         self.instrument_to_id = {inst: i for i, inst in enumerate(self.active_instruments)}
 
@@ -232,6 +244,34 @@ class ConditionNMEDTDataset(Dataset):
             }
         ]
 
+    @staticmethod
+    def _load_eeg_chunk_cache_manifest(eeg_chunk_cache_dir: str | None) -> dict[str, Any] | None:
+        if eeg_chunk_cache_dir is None:
+            return None
+        cache_dir = Path(eeg_chunk_cache_dir)
+        manifest_path = cache_dir / "manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"eeg_chunk_cache_dir set but manifest not found: {manifest_path}")
+        import json
+
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        manifest["_cache_dir"] = str(cache_dir.resolve())
+        return manifest
+
+    def _get_chunk_cache_entry(self, song_name: str, source_name: str) -> dict[str, Any] | None:
+        if self._chunk_cache_manifest is None:
+            return None
+        songs = self._chunk_cache_manifest.get("songs", {})
+        song_meta = songs.get(song_name)
+        if not isinstance(song_meta, dict):
+            return None
+        sources = song_meta.get("sources", {})
+        entry = sources.get(source_name)
+        if not isinstance(entry, dict):
+            return None
+        return entry
+
     def _build_song_records(
         self,
         song_specs: list[dict[str, Any]],
@@ -260,6 +300,7 @@ class ConditionNMEDTDataset(Dataset):
                 p = source_spec.get("mat_path", mat_path)
                 k = source_spec.get("data_key", data_key)
                 key = (str(p), str(k))
+                chunk_cache_entry = self._get_chunk_cache_entry(str(spec.get("name", f"song_{idx:02d}")), name)
                 if key not in global_shape_cache:
                     global_shape_cache[key] = _get_mat_shape(
                         mat_path=str(p),
@@ -271,6 +312,15 @@ class ConditionNMEDTDataset(Dataset):
                     mat_path=str(p),
                     data_key=str(k),
                     shape=global_shape_cache[key],
+                    chunk_cache_path=None
+                    if chunk_cache_entry is None
+                    else str(Path(self._chunk_cache_manifest["_cache_dir"]) / chunk_cache_entry["path"]),
+                    chunk_cache_shape=None
+                    if chunk_cache_entry is None
+                    else tuple(int(v) for v in chunk_cache_entry["shape"]),
+                    chunk_cache_subject_indices=None
+                    if chunk_cache_entry is None
+                    else tuple(int(v) for v in chunk_cache_entry["subject_indices"]),
                 )
 
             first = sources[required_sources[0]]
@@ -438,9 +488,32 @@ class ConditionNMEDTDataset(Dataset):
             self._source_cache.pop(old_key, None)
         return arr
 
+    def _get_source_chunk_array(self, src: EEGSource) -> np.ndarray | None:
+        if src.chunk_cache_path is None:
+            return None
+        cached = self._chunk_cache_arrays.get(src.chunk_cache_path)
+        if cached is not None:
+            return cached
+        arr = np.load(src.chunk_cache_path, mmap_mode="r")
+        self._chunk_cache_arrays[src.chunk_cache_path] = arr
+        return arr
+
     def _slice_eeg(self, song_idx: int, src_name: str, subj_idx: int, chunk_idx: int) -> np.ndarray:
         src = self.song_records[song_idx].sources[src_name]
         absolute_chunk_idx = self.song_records[song_idx].chunk_offset + chunk_idx
+        chunk_arr = self._get_source_chunk_array(src)
+        if chunk_arr is not None:
+            if src.chunk_cache_subject_indices is None:
+                raise RuntimeError(f"Chunk cache subject index metadata missing for source {src.name}.")
+            try:
+                local_subj_idx = src.chunk_cache_subject_indices.index(int(subj_idx))
+            except ValueError as exc:
+                raise KeyError(
+                    f"Subject {subj_idx} not present in chunk cache for source {src.name}. "
+                    f"cached_subjects={list(src.chunk_cache_subject_indices)}"
+                ) from exc
+            return np.asarray(chunk_arr[local_subj_idx, absolute_chunk_idx], dtype=np.float32).copy()
+
         st = absolute_chunk_idx * self.eeg_chunk_len
         ed = st + self.eeg_chunk_len
         src_arr = self._get_source_array(src)

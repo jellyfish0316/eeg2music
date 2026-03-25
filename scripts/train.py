@@ -182,6 +182,7 @@ def build_dataloader(
         eeg_preprocessing=None,
         precomputed_latents_path=latent_cfg.get("path") if use_precomputed_latents else None,
         chunk_range=chunk_range,
+        eeg_chunk_cache_dir=data_cfg.get("eeg_chunk_cache_dir"),
     )
     loader = DataLoader(
         dataset,
