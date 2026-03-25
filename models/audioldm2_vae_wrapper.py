@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from utils.vendor_audioldm2_audio import TacotronSTFT, normalize_wav, pad_wav
 
 try:
     import torchaudio
@@ -26,7 +29,7 @@ class AudioLDM2LatentOutput:
 
 class AudioLDM2VAEWrapper(nn.Module):
     """
-    waveform -> log-mel spectrogram -> AudioLDM2 VAE encoder -> latent z
+    waveform -> AudioLDM2-style log-mel spectrogram -> AudioLDM2 VAE encoder -> latent z
 
     Notes
     -----
@@ -97,10 +100,19 @@ class AudioLDM2VAEWrapper(nn.Module):
             for p in self.vae.parameters():
                 p.requires_grad = False
 
-        self.mel_transform = torchaudio.transforms.MelSpectrogram(
-            sample_rate=sample_rate,
-            **self.mel_config,
+        self.tacotron_stft = TacotronSTFT(
+            filter_length=self.mel_config["n_fft"],
+            hop_length=self.mel_config["hop_length"],
+            win_length=self.mel_config["win_length"],
+            n_mel_channels=self.mel_config["n_mels"],
+            sampling_rate=sample_rate,
+            mel_fmin=self.mel_config["f_min"],
+            mel_fmax=self.mel_config["f_max"],
+            mel_norm=self.mel_config["norm"],
+            mel_scale=self.mel_config["mel_scale"],
+            compression_clip_val=self.mel_log_eps,
         ).to(device)
+
     @property
     def scaling_factor(self) -> float:
         return float(self.vae.config.scaling_factor)
@@ -119,15 +131,16 @@ class AudioLDM2VAEWrapper(nn.Module):
 
         waveform = waveform.to(device=self.device, dtype=torch.float32)
 
-        waveform = waveform.clamp(-1.0, 1.0)
+        processed = []
+        for sample in waveform:
+            sample_np = sample.detach().cpu().numpy().astype(np.float32, copy=False)
+            sample_np = normalize_wav(sample_np).astype(np.float32, copy=False)
+            sample_np = pad_wav(sample_np[None, ...], target_length=sample_np.shape[-1])[0]
+            processed.append(torch.from_numpy(sample_np))
 
-        mel = self.mel_transform(waveform)
-        # AudioLDM-family vocoders operate on log-mel values whose decoded range
-        # is roughly in the low negative to small positive range (not [-1, 0] dB-normalized values).
-        mel_log = torch.log(torch.clamp(mel, min=self.mel_log_eps))
-        mel_log = mel_log.unsqueeze(1)
-
-        return mel_log.to(dtype=self.dtype)
+        waveform = torch.stack(processed, dim=0).to(device=self.device, dtype=torch.float32)
+        mel_log, _, _, _ = self.tacotron_stft.mel_spectrogram(waveform, normalize_fun=torch.log)
+        return mel_log.unsqueeze(1).to(dtype=self.dtype)
 
     def _load_full_pipeline(self):
         if AudioLDM2Pipeline is None:
