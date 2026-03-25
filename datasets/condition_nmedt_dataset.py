@@ -20,19 +20,21 @@ from datasets.eeg_preprocessing import (
 @dataclass
 class EEGSource:
     name: str
-    data: np.ndarray  # [C, T, S]
+    mat_path: str
+    data_key: str
+    shape: tuple[int, int, int]  # [C, T, S]
 
     @property
     def n_channels(self) -> int:
-        return int(self.data.shape[0])
+        return int(self.shape[0])
 
     @property
     def total_time(self) -> int:
-        return int(self.data.shape[1])
+        return int(self.shape[1])
 
     @property
     def total_subjects(self) -> int:
-        return int(self.data.shape[2])
+        return int(self.shape[2])
 
 
 @dataclass
@@ -49,7 +51,7 @@ def _load_eeg_source(
     mat_path: str,
     data_key: str,
     preprocessing: dict[str, Any] | None = None,
-) -> EEGSource:
+) -> np.ndarray:
     mat = scipy.io.loadmat(mat_path)
     if data_key not in mat:
         raise KeyError(f"'{data_key}' not found in {mat_path}. keys={list(mat.keys())}")
@@ -57,7 +59,25 @@ def _load_eeg_source(
     if arr.ndim != 3:
         raise ValueError(f"{name}: expected EEG shape [C,T,S], got {arr.shape}")
     arr = apply_source_level_eeg_preprocessing(arr, preprocessing)
-    return EEGSource(name=name, data=arr)
+    return arr
+
+
+def _get_mat_shape(
+    mat_path: str,
+    data_key: str,
+    preprocessing: dict[str, Any] | None = None,
+) -> tuple[int, int, int]:
+    for key, shape, _dtype in scipy.io.whosmat(mat_path):
+        if key != data_key:
+            continue
+        if len(shape) != 3:
+            raise ValueError(f"{data_key}: expected EEG shape [C,T,S], got {shape}")
+        channels, time_steps, subjects = [int(v) for v in shape]
+        if preprocessing and bool(preprocessing.get("drop_face_channels", False)):
+            keep_n = int(preprocessing.get("keep_first_n_channels", 124))
+            channels = min(channels, keep_n)
+        return (channels, time_steps, subjects)
+    raise KeyError(f"'{data_key}' not found in {mat_path}.")
 
 
 class ConditionNMEDTDataset(Dataset):
@@ -121,6 +141,9 @@ class ConditionNMEDTDataset(Dataset):
         self.eeg_preprocessing = dict(eeg_preprocessing or {"per_channel_normalization": normalize_eeg})
         self.precomputed_latents_path = precomputed_latents_path
         self.chunk_range = self._normalize_chunk_range(chunk_range)
+        self._source_cache: dict[tuple[str, str], np.ndarray] = {}
+        self._source_cache_order: list[tuple[str, str]] = []
+        self._max_cached_sources = 1
 
         self.instrument_to_id = {inst: i for i, inst in enumerate(self.active_instruments)}
 
@@ -216,7 +239,7 @@ class ConditionNMEDTDataset(Dataset):
         required_sources: list[str],
     ) -> list[SongRecord]:
         records: list[SongRecord] = []
-        global_cache: dict[tuple[str, str], EEGSource] = {}
+        global_shape_cache: dict[tuple[str, str], tuple[int, int, int]] = {}
 
         for idx, spec in enumerate(song_specs):
             mat_path = spec.get("mat_path")
@@ -237,14 +260,18 @@ class ConditionNMEDTDataset(Dataset):
                 p = source_spec.get("mat_path", mat_path)
                 k = source_spec.get("data_key", data_key)
                 key = (str(p), str(k))
-                if key not in global_cache:
-                    global_cache[key] = _load_eeg_source(
-                        name=name,
+                if key not in global_shape_cache:
+                    global_shape_cache[key] = _get_mat_shape(
                         mat_path=str(p),
                         data_key=str(k),
                         preprocessing=self.eeg_preprocessing,
                     )
-                sources[name] = global_cache[key]
+                sources[name] = EEGSource(
+                    name=name,
+                    mat_path=str(p),
+                    data_key=str(k),
+                    shape=global_shape_cache[key],
+                )
 
             first = sources[required_sources[0]]
             for name in required_sources[1:]:
@@ -389,12 +416,35 @@ class ConditionNMEDTDataset(Dataset):
     def __len__(self) -> int:
         return len(self.index_map)
 
+    def _get_source_array(self, src: EEGSource) -> np.ndarray:
+        key = (src.mat_path, src.data_key)
+        cached = self._source_cache.get(key)
+        if cached is not None:
+            if key in self._source_cache_order:
+                self._source_cache_order.remove(key)
+            self._source_cache_order.append(key)
+            return cached
+
+        arr = _load_eeg_source(
+            name=src.name,
+            mat_path=src.mat_path,
+            data_key=src.data_key,
+            preprocessing=self.eeg_preprocessing,
+        )
+        self._source_cache[key] = arr
+        self._source_cache_order.append(key)
+        while len(self._source_cache_order) > self._max_cached_sources:
+            old_key = self._source_cache_order.pop(0)
+            self._source_cache.pop(old_key, None)
+        return arr
+
     def _slice_eeg(self, song_idx: int, src_name: str, subj_idx: int, chunk_idx: int) -> np.ndarray:
         src = self.song_records[song_idx].sources[src_name]
         absolute_chunk_idx = self.song_records[song_idx].chunk_offset + chunk_idx
         st = absolute_chunk_idx * self.eeg_chunk_len
         ed = st + self.eeg_chunk_len
-        return src.data[:, st:ed, subj_idx].copy()
+        src_arr = self._get_source_array(src)
+        return src_arr[:, st:ed, subj_idx].copy()
 
     def _build_eeg(self, song_idx: int, subj_idx: int, chunk_idx: int) -> tuple[np.ndarray, int, int, bool]:
         if self.condition_type == "multi_attention":

@@ -49,6 +49,20 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _normalize_subject_subset(subject_subset: object | None, *, total_subjects: int) -> list[int] | None:
+    if subject_subset is None:
+        return None
+    if not isinstance(subject_subset, (list, tuple)):
+        raise ValueError(f"split.subject_indices must be a list of zero-based subject indices, got {subject_subset!r}")
+    normalized = sorted({int(s) for s in subject_subset})
+    for s in normalized:
+        if s < 0 or s >= total_subjects:
+            raise ValueError(f"Invalid subject index {s}; total_subjects={total_subjects}")
+    if len(normalized) == 0:
+        raise ValueError("split.subject_indices cannot be empty.")
+    return normalized
+
+
 def _set_trainable(module: torch.nn.Module | None, enabled: bool) -> int:
     if module is None:
         return 0
@@ -612,6 +626,12 @@ def main():
     )
     total_subjects = int(ds_probe.total_subjects)
     print("total_subjects:", total_subjects, flush=True)
+    subject_subset = _normalize_subject_subset(
+        split_cfg.get("subject_indices"),
+        total_subjects=total_subjects,
+    )
+    effective_subjects = list(range(total_subjects)) if subject_subset is None else subject_subset
+    print("effective_subjects:", effective_subjects, flush=True)
 
     if bool(split_cfg.get("loso", {}).get("enabled", True)):
         num_folds = exp_cfg.get("num_folds", None)
@@ -623,8 +643,25 @@ def main():
             seed=int(exp_cfg.get("seed", cfg.get("seed", 42))),
             num_folds=int(num_folds),
         )
+        if subject_subset is not None:
+            filtered_splits = []
+            for split in splits:
+                train_subjects = [s for s in split["train_subjects"] if s in subject_subset]
+                val_subjects = [s for s in split["val_subjects"] if s in subject_subset]
+                test_subjects = [s for s in split["test_subjects"] if s in subject_subset]
+                if len(train_subjects) == 0 or len(val_subjects) == 0 or len(test_subjects) == 0:
+                    continue
+                filtered_splits.append(
+                    {
+                        **split,
+                        "train_subjects": train_subjects,
+                        "val_subjects": val_subjects,
+                        "test_subjects": test_subjects,
+                    }
+                )
+            splits = filtered_splits
     else:
-        all_subjects = list(range(total_subjects))
+        all_subjects = effective_subjects
         splits = [
             {
                 "fold_index": 0,

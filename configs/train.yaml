@@ -77,7 +77,7 @@ data:
   chunk_sec: 3.5
   eeg_fs: 1000
   audio_fs: 16000
-  batch_size: 4
+  batch_size: 2
   num_workers: 0
   text_prompt: "Pop music"
 
@@ -130,6 +130,10 @@ diffusion:
 split:
   loso:
     enabled: false
+  # Optional zero-based dataset subject subset.
+  # For a paper-style single-subject run, set e.g. [1] if your mats store "subject 2"
+  # at dataset index 1.
+  subject_indices: [1] # subject 2
   val_ratio: 0.1
   chunk_splits:
     train: [0.0, 0.8]
@@ -141,7 +145,7 @@ train:
   model_dtype: float32
   lr: 0.0001
   epochs: 20
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 3
   grad_clip: 1.0
   log_every: 10
   validation_metric: clap
