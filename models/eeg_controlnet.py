@@ -44,6 +44,9 @@ class EEGControlNet(nn.Module):
         self.inject_middle_block = bool(inject_middle_block)
 
         conv_builder = zero_module if zero_init else (lambda m: m)
+        self.cond_zero_conv = conv_builder(
+            nn.Conv2d(self.latent_channels, self.latent_channels, kernel_size=1)
+        )
         self.down_zero_convs = nn.ModuleList(
             [conv_builder(nn.Conv2d(int(ch), int(ch), kernel_size=1)) for ch in input_block_channels]
         )
@@ -173,44 +176,49 @@ class EEGControlNet(nn.Module):
         encoder_hidden_states_1: torch.Tensor | None = None,
     ) -> dict[str, object]:
         branch_dtype = next(self.conv_in.parameters()).dtype
-        hidden_states = (zt + projected_latent).to(
+        zt = zt.to(
             device=next(self.conv_in.parameters()).device,
             dtype=branch_dtype,
         )
+        projected_latent = projected_latent.to(
+            device=zt.device,
+            dtype=branch_dtype,
+        )
+        conditioned_input = zt + self.cond_zero_conv(projected_latent)
         if encoder_hidden_states is None:
             encoder_hidden_states = self._default_encoder_hidden_state(
-                batch_size=hidden_states.shape[0],
-                device=hidden_states.device,
+                batch_size=conditioned_input.shape[0],
+                device=conditioned_input.device,
                 dtype=branch_dtype,
                 width=self.cross_attention_dims[0],
             )
         else:
             encoder_hidden_states = encoder_hidden_states.to(
-                device=hidden_states.device,
+                device=conditioned_input.device,
                 dtype=branch_dtype,
             )
         if self.cross_attention_dims[1] is None:
             encoder_hidden_states_1 = None
         elif encoder_hidden_states_1 is None:
             encoder_hidden_states_1 = self._default_encoder_hidden_state(
-                batch_size=hidden_states.shape[0],
-                device=hidden_states.device,
+                batch_size=conditioned_input.shape[0],
+                device=conditioned_input.device,
                 dtype=branch_dtype,
                 width=self.cross_attention_dims[1],
             )
         else:
             encoder_hidden_states_1 = encoder_hidden_states_1.to(
-                device=hidden_states.device,
+                device=conditioned_input.device,
                 dtype=branch_dtype,
             )
 
         temb = self._compute_temporal_embedding(
-            timesteps.to(device=hidden_states.device),
+            timesteps.to(device=conditioned_input.device),
             dtype=branch_dtype,
         )
 
         down_block_residuals = []
-        hidden_states = self.conv_in(hidden_states)
+        hidden_states = self.conv_in(conditioned_input)
         down_block_residuals.append(self.down_zero_convs[0](hidden_states))
 
         residual_index = 1
