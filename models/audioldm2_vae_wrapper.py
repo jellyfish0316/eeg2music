@@ -108,9 +108,6 @@ class AudioLDM2VAEWrapper(nn.Module):
             sampling_rate=sample_rate,
             mel_fmin=self.mel_config["f_min"],
             mel_fmax=self.mel_config["f_max"],
-            mel_norm=self.mel_config["norm"],
-            mel_scale=self.mel_config["mel_scale"],
-            compression_clip_val=self.mel_log_eps,
         ).to(device)
 
     @property
