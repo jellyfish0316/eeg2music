@@ -163,6 +163,17 @@ def build_dataloader(
     use_precomputed_latents = bool(latent_cfg.get("enabled", False))
     chunk_splits = split_cfg.get("chunk_splits", {})
     chunk_range = tuple(chunk_splits.get(chunk_split_name, [0.0, 1.0]))
+    songs = data_cfg.get("songs")
+    song_splits = split_cfg.get("song_splits", {})
+    selected_song_names = song_splits.get(chunk_split_name)
+    if songs and selected_song_names is not None:
+        selected_set = {str(name) for name in selected_song_names}
+        songs = [song for song in songs if str(song.get("name")) in selected_set]
+        if len(songs) == 0:
+            raise ValueError(
+                f"split.song_splits.{chunk_split_name} selected no songs. "
+                f"requested={list(selected_song_names)}"
+            )
 
     dataset = ConditionNMEDTDataset(
         condition_type=condition_type,
@@ -172,7 +183,7 @@ def build_dataloader(
         audio_path=data_cfg.get("audio_path", "data/songs/song21_16k.wav"),
         data_key=data_cfg.get("data_key", "data21"),
         condition_sources=data_cfg.get("condition_sources", None),
-        songs=data_cfg.get("songs"),
+        songs=songs,
         chunk_sec=float(data_cfg["chunk_sec"]),
         eeg_fs=int(data_cfg["eeg_fs"]),
         audio_fs=int(data_cfg["audio_fs"]),

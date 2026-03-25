@@ -17,6 +17,10 @@ data:
   # Keep this null for the current single-song fallback mode.
 
   songs:
+    - name: song21
+      mat_path: data/EEG_processed/song21_Processed.mat
+      audio_path: data/songs/song21_16k.wav
+      data_key: data21
     - name: song22
       mat_path: data/EEG_processed/song22_Processed.mat
       audio_path: data/songs/song22_16k.wav
@@ -136,6 +140,11 @@ split:
   # at dataset index 1.
   subject_indices: [1] # subject 2
   val_ratio: 0.1
+  # Keep all songs in data.songs. OOD should be controlled here, not by deleting songs.
+  song_splits:
+    train: [song22, song23, song24, song25, song26, song27, song28, song29, song30]
+    val: [song22, song23, song24, song25, song26, song27, song28, song29, song30]
+    test: [song21]
   chunk_splits:
     train: [0.0, 0.8]
     val: [0.8, 0.9]

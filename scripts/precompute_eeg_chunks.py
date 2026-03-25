@@ -64,17 +64,52 @@ def normalize_song_specs(
     ]
 
 
+def resolve_required_sources(
+    *,
+    conditions: list[str],
+    active_instruments: list[str],
+    target_instrument: str | None = None,
+) -> list[str]:
+    required: list[str] = []
+
+    def add(name: str) -> None:
+        if name not in required:
+            required.append(name)
+
+    for condition in conditions:
+        if condition == "passive_x3":
+            add("passive")
+        elif condition == "multi_attention":
+            if len(active_instruments) < 3:
+                raise ValueError("multi_attention requires at least 3 active instruments.")
+            for inst in active_instruments[:3]:
+                add(inst)
+        elif condition == "single_repeated":
+            if target_instrument is None:
+                raise ValueError("single_repeated requires experiment.target_instrument.")
+            add(target_instrument)
+        else:
+            raise ValueError(f"Unsupported condition type for EEG chunk cache: {condition}")
+
+    return required
+
+
 def main() -> None:
     cfg = load_config("configs/train.yaml")
     set_seed(cfg["seed"])
 
     data_cfg = cfg["data"]
-    split_cfg = cfg.get("split", {})
+    experiment_cfg = cfg.get("experiment", {})
     out_dir = Path(data_cfg.get("eeg_chunk_cache_dir", "data/precomputed/eeg_chunks"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    active_instruments = list(cfg.get("experiment", {}).get("active_instruments", ["drum", "guitar", "vocal"]))
-    required_sources = ["passive"] + active_instruments
+    active_instruments = list(experiment_cfg.get("active_instruments", ["drum", "guitar", "vocal"]))
+    conditions = list(experiment_cfg.get("conditions", ["passive_x3"]))
+    required_sources = resolve_required_sources(
+        conditions=conditions,
+        active_instruments=active_instruments,
+        target_instrument=experiment_cfg.get("target_instrument"),
+    )
     chunk_sec = float(data_cfg["chunk_sec"])
     eeg_fs = int(data_cfg["eeg_fs"])
     audio_fs = int(data_cfg["audio_fs"])
