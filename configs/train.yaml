@@ -117,7 +117,7 @@ controlnet:
 
 latent_cache: 
   enabled: true
-  path: data/precomputed/nmedt_multisong_audioldm2_latents_logmel_v3_paper_split.pt
+  path: data/precomputed/nmedt_audioldm2_latents_paperaligned_v4.pt
   latent_channels: 8
   precompute_batch_size: 16
   precompute_use_mode: true
@@ -141,7 +141,7 @@ train:
   model_dtype: float32
   lr: 0.0001
   epochs: 20
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2
   grad_clip: 1.0
   log_every: 10
   validation_metric: clap
@@ -149,5 +149,5 @@ train:
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
   run_mode: single_fold
-  output_root: outputs/paper_split_lr1e4_ep8_raw_logmel_v3
+  output_root: outputs/paperaligned_v4
   checkpoint_name: model.pt
