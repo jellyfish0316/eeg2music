@@ -44,11 +44,8 @@ class EEGControlNet(nn.Module):
         self.inject_middle_block = bool(inject_middle_block)
 
         conv_builder = zero_module if zero_init else (lambda m: m)
-        first_block_channel = int(input_block_channels[0])
-        self.input_hint_block = nn.Sequential(
-            nn.Conv2d(self.latent_channels, first_block_channel, kernel_size=3, padding=1),
-            nn.SiLU(),
-            conv_builder(nn.Conv2d(first_block_channel, first_block_channel, kernel_size=3, padding=1)),
+        self.cin = conv_builder(
+            nn.Conv2d(self.latent_channels, self.latent_channels, kernel_size=1)
         )
         self.down_zero_convs = nn.ModuleList(
             [conv_builder(nn.Conv2d(int(ch), int(ch), kernel_size=1)) for ch in input_block_channels]
@@ -220,9 +217,8 @@ class EEGControlNet(nn.Module):
         )
 
         down_block_residuals = []
-        hidden_states = self.conv_in(zt)
-        guided_hint = self.input_hint_block(projected_latent)
-        hidden_states = hidden_states + guided_hint
+        hidden_states = self.cin(zt) + projected_latent
+        hidden_states = self.conv_in(hidden_states)
         down_block_residuals.append(self.down_zero_convs[0](hidden_states))
 
         residual_index = 1
