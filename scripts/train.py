@@ -239,7 +239,6 @@ def build_model_from_dataset(
         latent_grid=latent_grid,
         projector_channels=tuple(model_cfg.get("projector", {}).get("channels", [256, 512, 1024, 2048])),
         projector_strides=tuple(model_cfg.get("projector", {}).get("strides", [5, 2, 2, 2])),
-        projector_use_linear_fallback=bool(model_cfg.get("projector", {}).get("use_linear_fallback", True)),
         diffusion_num_steps=int(cfg["diffusion"]["num_train_timesteps"]),
         diffusion_beta_start=float(cfg["diffusion"]["beta_start"]),
         diffusion_beta_end=float(cfg["diffusion"]["beta_end"]),

@@ -89,7 +89,6 @@ model:
     channels: [256, 512, 1024, 2048]
     strides: [5, 2, 2, 2]
     lat_grid: null
-    use_linear_fallback: true
   unet:
     cache_pipeline: true
     text_cache_path: data/precomputed/audioldm2_text_pop_music.pt

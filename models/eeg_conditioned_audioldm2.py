@@ -31,7 +31,6 @@ class EEGConditionedAudioLDM2(nn.Module):
         latent_grid: tuple[int, int, int] | None = None,
         projector_channels: tuple[int, ...] = (256, 512, 1024, 2048),
         projector_strides: tuple[int, ...] = (5, 2, 2, 2),
-        projector_use_linear_fallback: bool = True,
         diffusion_num_steps: int = 1000,
         diffusion_beta_start: float = 1e-4,
         diffusion_beta_end: float = 2e-2,
@@ -97,7 +96,6 @@ class EEGConditionedAudioLDM2(nn.Module):
             conv_channels=projector_channels,
             strides=projector_strides,
             latent_grid=self.latent_grid,
-            use_linear_fallback=projector_use_linear_fallback,
         )
 
         self.control_unet = AudioLDM2UNetWrapper(
