@@ -11,11 +11,10 @@ if str(REPO_ROOT) not in sys.path:
 
 import librosa
 import numpy as np
+import scipy.io
 import soundfile as sf
 import yaml
 
-from datasets.condition_nmedt_dataset import _load_eeg_source
-from datasets.eeg_preprocessing import apply_chunk_level_eeg_preprocessing
 from utils.seed import set_seed
 
 
@@ -24,44 +23,33 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def normalize_song_specs(
+def load_song_specs(
     *,
-    songs: list[dict] | None,
-    mat_path: str | None,
-    audio_path: str | None,
-    data_key: str,
-    condition_sources: dict | None,
+    songs: object,
 ) -> list[dict]:
-    if songs:
-        normalized = []
-        for idx, song in enumerate(songs):
-            if "audio_path" not in song:
-                raise KeyError(f"data.songs[{idx}] is missing 'audio_path'")
-            per_song_condition_sources = song.get("condition_sources")
-            if per_song_condition_sources is None and "mat_path" not in song:
-                per_song_condition_sources = condition_sources
-            normalized.append(
-                {
-                    "name": str(song.get("name", f"song_{idx:02d}")),
-                    "mat_path": song.get("mat_path", mat_path),
-                    "audio_path": song["audio_path"],
-                    "data_key": song.get("data_key", data_key),
-                    "condition_sources": per_song_condition_sources,
-                }
-            )
-        return normalized
+    if not isinstance(songs, list) or len(songs) == 0:
+        raise ValueError("configs/train.yaml must define a non-empty data.songs list.")
 
-    if mat_path is None or audio_path is None:
-        raise ValueError("Single-song dataset requires both mat_path and audio_path.")
-    return [
-        {
-            "name": Path(audio_path).stem,
-            "mat_path": mat_path,
-            "audio_path": audio_path,
-            "data_key": data_key,
-            "condition_sources": condition_sources,
-        }
-    ]
+    normalized = []
+    for idx, song in enumerate(songs):
+        if not isinstance(song, dict):
+            raise TypeError(f"data.songs[{idx}] must be a mapping, got {type(song)}")
+        if "audio_path" not in song:
+            raise KeyError(f"data.songs[{idx}] is missing 'audio_path'")
+        if "mat_path" not in song:
+            raise KeyError(f"data.songs[{idx}] is missing 'mat_path'")
+        if "data_key" not in song:
+            raise KeyError(f"data.songs[{idx}] is missing 'data_key'")
+        normalized.append(
+            {
+                "name": str(song.get("name", f"song_{idx:02d}")),
+                "mat_path": str(song["mat_path"]),
+                "audio_path": str(song["audio_path"]),
+                "data_key": str(song["data_key"]),
+                "condition_sources": song.get("condition_sources"),
+            }
+        )
+    return normalized
 
 
 def resolve_required_sources(
@@ -94,6 +82,21 @@ def resolve_required_sources(
     return required
 
 
+def load_eeg_array(
+    *,
+    source_name: str,
+    mat_path: str,
+    data_key: str,
+) -> np.ndarray:
+    mat = scipy.io.loadmat(mat_path)
+    if data_key not in mat:
+        raise KeyError(f"{source_name}: '{data_key}' not found in {mat_path}. keys={list(mat.keys())}")
+    eeg = np.asarray(mat[data_key], dtype=np.float32)
+    if eeg.ndim != 3:
+        raise ValueError(f"{source_name}: expected EEG shape [C,T,S], got {eeg.shape}")
+    return eeg
+
+
 def main() -> None:
     cfg = load_config("configs/train.yaml")
     set_seed(cfg["seed"])
@@ -115,22 +118,8 @@ def main() -> None:
     audio_fs = int(data_cfg["audio_fs"])
     eeg_chunk_len = int(chunk_sec * eeg_fs)
     audio_chunk_len = int(chunk_sec * audio_fs)
-    eeg_preprocessing = {
-        "drop_face_channels": True,
-        "keep_first_n_channels": 124,
-        "robust_scaler": True,
-        "center_using_first_samples": 1000,
-        "std_clamp": 20.0,
-        "per_channel_normalization": bool(data_cfg.get("normalize_eeg", True)),
-    }
 
-    song_specs = normalize_song_specs(
-        songs=data_cfg.get("songs"),
-        mat_path=data_cfg.get("mat_path"),
-        audio_path=data_cfg.get("audio_path"),
-        data_key=data_cfg.get("data_key", "data21"),
-        condition_sources=data_cfg.get("condition_sources"),
-    )
+    song_specs = load_song_specs(songs=data_cfg.get("songs"))
 
     manifest: dict[str, object] = {
         "meta": {
@@ -173,11 +162,10 @@ def main() -> None:
             source_spec = source_specs[source_name]
             src_mat_path = str(source_spec.get("mat_path", mat_path))
             src_data_key = str(source_spec.get("data_key", data_key))
-            eeg = _load_eeg_source(
-                name=source_name,
+            eeg = load_eeg_array(
+                source_name=source_name,
                 mat_path=src_mat_path,
                 data_key=src_data_key,
-                preprocessing=eeg_preprocessing,
             )
             subject_indices = list(range(int(eeg.shape[2])))
             n_chunks_eeg = int(eeg.shape[1] // eeg_chunk_len)
@@ -197,12 +185,7 @@ def main() -> None:
                 for chunk_idx in range(total_chunks):
                     st = chunk_idx * eeg_chunk_len
                     ed = st + eeg_chunk_len
-                    chunk = eeg[:, st:ed, subj_idx].copy()
-                    chunk = apply_chunk_level_eeg_preprocessing(
-                        chunk,
-                        eeg_preprocessing,
-                        fallback_normalize=True,
-                    )
+                    chunk = eeg[:, st:ed, subj_idx]
                     chunk_array[local_subj_idx, chunk_idx] = chunk.astype(np.float32, copy=False)
                 print(
                     f"cached EEG song={song_name} source={source_name} subject={subj_idx} "

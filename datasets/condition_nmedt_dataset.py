@@ -11,11 +11,6 @@ import soundfile as sf
 import torch
 from torch.utils.data import Dataset
 
-from datasets.eeg_preprocessing import (
-    apply_chunk_level_eeg_preprocessing,
-    apply_source_level_eeg_preprocessing,
-)
-
 
 @dataclass
 class EEGSource:
@@ -59,7 +54,6 @@ def _load_eeg_source(
     name: str,
     mat_path: str,
     data_key: str,
-    preprocessing: dict[str, Any] | None = None,
 ) -> np.ndarray:
     mat = scipy.io.loadmat(mat_path)
     if data_key not in mat:
@@ -67,25 +61,19 @@ def _load_eeg_source(
     arr = mat[data_key].astype(np.float32)
     if arr.ndim != 3:
         raise ValueError(f"{name}: expected EEG shape [C,T,S], got {arr.shape}")
-    arr = apply_source_level_eeg_preprocessing(arr, preprocessing)
     return arr
 
 
 def _get_mat_shape(
     mat_path: str,
     data_key: str,
-    preprocessing: dict[str, Any] | None = None,
 ) -> tuple[int, int, int]:
     for key, shape, _dtype in scipy.io.whosmat(mat_path):
         if key != data_key:
             continue
         if len(shape) != 3:
             raise ValueError(f"{data_key}: expected EEG shape [C,T,S], got {shape}")
-        channels, time_steps, subjects = [int(v) for v in shape]
-        if preprocessing and bool(preprocessing.get("drop_face_channels", False)):
-            keep_n = int(preprocessing.get("keep_first_n_channels", 124))
-            channels = min(channels, keep_n)
-        return (channels, time_steps, subjects)
+        return tuple(int(v) for v in shape)
     raise KeyError(f"'{data_key}' not found in {mat_path}.")
 
 
@@ -119,10 +107,8 @@ class ConditionNMEDTDataset(Dataset):
         eeg_fs: int = 125,
         audio_fs: int = 16000,
         subjects: list[int] | None = None,
-        normalize_eeg: bool = True,
         normalize_audio: bool = True,
         text_prompt: str = "Pop music",
-        eeg_preprocessing: dict[str, Any] | None = None,
         precomputed_latents_path: str | None = None,
         chunk_range: tuple[float, float] | None = None,
         eeg_chunk_cache_dir: str | None = None,
@@ -145,10 +131,8 @@ class ConditionNMEDTDataset(Dataset):
         self.audio_fs = int(audio_fs)
         self.eeg_chunk_len = int(self.chunk_sec * self.eeg_fs)
         self.audio_chunk_len = int(self.chunk_sec * self.audio_fs)
-        self.normalize_eeg = normalize_eeg
         self.normalize_audio = normalize_audio
         self.text_prompt = text_prompt
-        self.eeg_preprocessing = dict(eeg_preprocessing or {"per_channel_normalization": normalize_eeg})
         self.precomputed_latents_path = precomputed_latents_path
         self.chunk_range = self._normalize_chunk_range(chunk_range)
         self._source_cache: dict[tuple[str, str], np.ndarray] = {}
@@ -305,7 +289,6 @@ class ConditionNMEDTDataset(Dataset):
                     global_shape_cache[key] = _get_mat_shape(
                         mat_path=str(p),
                         data_key=str(k),
-                        preprocessing=self.eeg_preprocessing,
                     )
                 sources[name] = EEGSource(
                     name=name,
@@ -419,7 +402,7 @@ class ConditionNMEDTDataset(Dataset):
                     raise ValueError(
                         f"Latent cache missing dataset songs {missing}. cache={latent_path} "
                         f"dataset_song_names={expected_song_names} cache_song_names={cache_song_names}. "
-                        "Re-run scripts/precompute_latents.py with the current multi-song config, "
+                        "Re-run scripts/precompute_audio_latents.py with the current multi-song config, "
                         "or set latent_cache.enabled=false to encode audio on the fly."
                     )
                 per_song = [per_song_map[name] for name in expected_song_names]
@@ -430,7 +413,7 @@ class ConditionNMEDTDataset(Dataset):
                     f"dataset_song_names={expected_song_names}",
                 ]
                 details.append(
-                    "Re-run scripts/precompute_latents.py with the current multi-song config, "
+                    "Re-run scripts/precompute_audio_latents.py with the current multi-song config, "
                     "or set latent_cache.enabled=false to encode audio on the fly."
                 )
                 raise ValueError(" ".join(details))
@@ -495,7 +478,6 @@ class ConditionNMEDTDataset(Dataset):
             name=src.name,
             mat_path=src.mat_path,
             data_key=src.data_key,
-            preprocessing=self.eeg_preprocessing,
         )
         self._source_cache[key] = arr
         self._source_cache_order.append(key)
@@ -563,11 +545,6 @@ class ConditionNMEDTDataset(Dataset):
         a_ed = a_st + self.audio_chunk_len
         audio = song.audio[a_st:a_ed].copy()
 
-        eeg = apply_chunk_level_eeg_preprocessing(
-            eeg,
-            self.eeg_preprocessing,
-            fallback_normalize=self.normalize_eeg,
-        )
         if self.normalize_audio:
             max_abs = np.max(np.abs(audio)) + 1e-8
             audio = audio / max_abs
@@ -585,7 +562,6 @@ class ConditionNMEDTDataset(Dataset):
             "trial_id": torch.tensor(trial_id, dtype=torch.long),
             "is_passive": torch.tensor(bool(is_passive)),
             "text": self.text_prompt,
-            "eeg_preprocessing": self.eeg_preprocessing,
         }
         if self.z0_by_song is not None:
             sample["z0"] = self.z0_by_song[song_idx][absolute_chunk_idx].clone()

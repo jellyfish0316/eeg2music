@@ -68,10 +68,10 @@ Because of that, proposal assumptions may differ from the original paper in subj
 
 - [configs/train.yaml](/home/bryan/eeg/configs/train.yaml): main training config
 - [scripts/train.py](/home/bryan/eeg/scripts/train.py): LOSO training entrypoint
-- [scripts/precompute_latents.py](/home/bryan/eeg/scripts/precompute_latents.py): precompute AudioLDM2 latents
+- [scripts/precompute_audio_latents.py](/home/bryan/eeg/scripts/precompute_audio_latents.py): precompute AudioLDM2 latents
 - [scripts/generate.py](/home/bryan/eeg/scripts/generate.py): decode EEG-conditioned latents into `.wav` files
 - [scripts/evaluate_generation.py](/home/bryan/eeg/scripts/evaluate_generation.py): CLAP audio-similarity evaluation over generated vs target audio
-- [scripts/prepare_nmedt_raw.py](/home/bryan/eeg/scripts/prepare_nmedt_raw.py): inspect raw NMED-T MATLAB v7.3 files and convert them into song-level `.mat` files
+- [scripts/prepare_nmedt_raw_eeg.py](/home/bryan/eeg/scripts/prepare_nmedt_raw_eeg.py): inspect raw NMED-T MATLAB v7.3 files and convert them into song-level `.mat` files
 - [models/eeg_conditioned_audioldm2.py](/home/bryan/eeg/models/eeg_conditioned_audioldm2.py): main model (`EEGConditionedAudioLDM2`)
 - [models/eeg_projector.py](/home/bryan/eeg/models/eeg_projector.py): paper-style EEG projector
 - [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py): ControlNet adapter branch (`EEGControlNet`)
@@ -105,7 +105,7 @@ The current training code does not consume participant-level raw recordings such
 `[channels, time, subjects]`, for example `song21_Imputed.mat` with key `data21`.
 
 If your dataset folder currently contains raw MATLAB v7.3 recordings, use
-[prepare_nmedt_raw.py](/home/bryan/eeg/scripts/prepare_nmedt_raw.py) in two steps:
+[prepare_nmedt_raw_eeg.py](/home/bryan/eeg/scripts/prepare_nmedt_raw_eeg.py) in two steps:
 
 1. inspect the raw file to discover available keys / shapes
 2. convert recordings into song-level outputs compatible with the existing dataset code
@@ -113,14 +113,14 @@ If your dataset folder currently contains raw MATLAB v7.3 recordings, use
 Inspect example:
 
 ```bash
-python scripts/prepare_nmedt_raw.py inspect \
+python scripts/prepare_nmedt_raw_eeg.py inspect \
   --file data/EEG/02_1_raw.mat
 ```
 
 Convert example:
 
 ```bash
-python scripts/prepare_nmedt_raw.py convert \
+python scripts/prepare_nmedt_raw_eeg.py convert \
   --raw-dir data/EEG \
   --output-dir data/EEG_processed \
   --eeg-key eeg \
@@ -146,7 +146,6 @@ The active config is [configs/train.yaml](/home/bryan/eeg/configs/train.yaml).
 Important fields:
 
 - `data.text_prompt`: dataset-level/default prompt string, default `"Pop music"`
-- `data.eeg_preprocessing`: explicit preprocessing policy
 - `model.unet.cache_pipeline`: keep the diffusers pipeline object alive after extracting the pretrained U-Net
 - `model.unet.text_cache_path`: optional on-disk cache for fixed-prompt AudioLDM2 text embeddings
 - `model.projector.channels`: default `[256, 512, 1024, 2048]`
@@ -321,10 +320,10 @@ Compare observed results against both the original paper and the proposal hypoth
 To generate latents with the current script:
 
 ```bash
-python scripts/precompute_latents.py
+python scripts/precompute_audio_latents.py
 ```
 
-Note: `scripts/precompute_latents.py` currently reads `configs/train.yaml` directly and does not yet expose a `--config` CLI flag.
+Note: `scripts/precompute_audio_latents.py` currently reads `configs/train.yaml` directly and does not yet expose a `--config` CLI flag.
 
 The config default points to:
 

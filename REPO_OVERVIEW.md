@@ -27,9 +27,9 @@ The current code path is:
 
 ```mermaid
 graph TD
-    A[Raw EEG recordings] --> B[prepare_nmedt_raw.py]
+    A[Raw EEG recordings] --> B[prepare_nmedt_raw_eeg.py]
     B --> C[Song-level EEG .mat files]
-    D[Song WAV files] --> E[precompute_latents.py]
+    D[Song WAV files] --> E[precompute_audio_latents.py]
     E --> F[AudioLDM2 VAE latent cache]
     C --> G[ConditionNMEDTDataset]
     F --> G
@@ -91,9 +91,8 @@ The training dataset consumes the second form.
 
 Relevant code:
 
-- `scripts/prepare_nmedt_raw.py`
+- `scripts/prepare_nmedt_raw_eeg.py`
 - `datasets/condition_nmedt_dataset.py`
-- `datasets/nmedt_dataset.py`
 
 Expected song-level EEG format:
 
@@ -124,21 +123,15 @@ This is consistent with treating `song21` as an OOD track outside the main train
 
 #### EEG preprocessing
 
-There are two relevant preprocessing layers in the repo:
-
-1. Raw-recording conversion preprocessing in `scripts/prepare_nmedt_raw.py`
-2. Dataset-side preprocessing in `datasets/eeg_preprocessing.py`
+The repo currently uses a single offline EEG preprocessing stage in `scripts/prepare_nmedt_raw_eeg.py`.
 
 Current relevant functions:
 
-- `scripts/prepare_nmedt_raw.py`
+- `scripts/prepare_nmedt_raw_eeg.py`
   - `_robust_scale`
   - `_center_using_first_samples`
   - `_std_clamp`
   - `_downsample_linear`
-- `datasets/eeg_preprocessing.py`
-  - `apply_source_level_eeg_preprocessing`
-  - `apply_chunk_level_eeg_preprocessing`
 
 Implemented EEG preprocessing options include:
 
@@ -146,9 +139,7 @@ Implemented EEG preprocessing options include:
 - robust scaling by median / IQR
 - centering using the mean over the first `1000` samples
 - clamping by a multiple of per-channel standard deviation
-- optional chunk-level per-channel normalization
-
-The current training code passes `normalize_eeg=False` and `eeg_preprocessing=None` when building the dataset in [train.py](/home/bryan/eeg/scripts/train.py), so train-time EEG preprocessing is intentionally disabled for the processed-data path.
+- chunking is now handled later by `scripts/precompute_eeg_chunks.py`, without additional EEG preprocessing
 
 #### Audio preprocessing
 
@@ -433,10 +424,6 @@ From code alone, this is the similarity mechanism used for:
 
 - [datasets/condition_nmedt_dataset.py](/home/bryan/eeg/datasets/condition_nmedt_dataset.py)
   - condition-aware dataset used by training and generation
-- [datasets/nmedt_dataset.py](/home/bryan/eeg/datasets/nmedt_dataset.py)
-  - simpler dataset used mainly for latent precompute
-- [datasets/eeg_preprocessing.py](/home/bryan/eeg/datasets/eeg_preprocessing.py)
-  - EEG preprocessing helpers
 
 ### `models/`
 
@@ -459,11 +446,11 @@ From code alone, this is the similarity mechanism used for:
   - main training entrypoint
 - [scripts/generate.py](/home/bryan/eeg/scripts/generate.py)
   - generation entrypoint
-- [scripts/precompute_latents.py](/home/bryan/eeg/scripts/precompute_latents.py)
+- [scripts/precompute_audio_latents.py](/home/bryan/eeg/scripts/precompute_audio_latents.py)
   - precompute song chunk latents
 - [scripts/evaluate_generation.py](/home/bryan/eeg/scripts/evaluate_generation.py)
   - CLAP-like evaluation over generated vs target audio
-- [scripts/prepare_nmedt_raw.py](/home/bryan/eeg/scripts/prepare_nmedt_raw.py)
+- [scripts/prepare_nmedt_raw_eeg.py](/home/bryan/eeg/scripts/prepare_nmedt_raw_eeg.py)
   - raw NMED-T inspection and conversion
 - [scripts/compare_unet_to_official.py](/home/bryan/eeg/scripts/compare_unet_to_official.py)
   - diagnostic comparison between official and wrapped U-Net behavior
@@ -709,7 +696,7 @@ That is an important design assumption.
 
 ### 9.7 The latent cache must be rebuilt whenever the audio-to-latent definition changes
 
-Because `scripts/precompute_latents.py` stores VAE latents to disk, any change to:
+Because `scripts/precompute_audio_latents.py` stores VAE latents to disk, any change to:
 
 - mel extraction
 - VAE wrapper settings
@@ -735,7 +722,7 @@ These are code-grounded engineering risks, not speculative literature claims.
 
 ### 9.9 The raw conversion script is explicit but assumption-heavy
 
-`scripts/prepare_nmedt_raw.py` makes several strong assumptions:
+`scripts/prepare_nmedt_raw_eeg.py` makes several strong assumptions:
 
 - mapping raw subject IDs to clean subject IDs
 - trigger-driven song slicing using `DIN_1`

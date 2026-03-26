@@ -8,11 +8,6 @@ experiment:
   fold_index: 0
 
 data:
-  # Default fallback source (used when condition_sources missing keys)
-  mat_path: data/EEG_processed/song22_Processed.mat
-  audio_path: data/songs/song22_16k.wav
-  data_key: data22
-
   # Optional multi-song mode for paper-style validation across NMED-T.
   # Keep this null for the current single-song fallback mode.
 
