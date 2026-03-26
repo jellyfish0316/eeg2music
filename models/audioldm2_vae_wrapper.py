@@ -248,6 +248,48 @@ class AudioLDM2VAEWrapper(nn.Module):
         return features.detach().cpu()
 
     @torch.no_grad()
+    def get_text_features(
+        self,
+        texts: str | list[str],
+        *,
+        normalize: bool = True,
+    ) -> torch.Tensor:
+        pipe = self._load_full_pipeline()
+        if isinstance(texts, str):
+            texts = [texts]
+        inputs = pipe.tokenizer(
+            texts,
+            padding=True,
+            return_tensors="pt",
+        )
+        text_inputs = {
+            key: value.to(device=self.device)
+            for key, value in inputs.items()
+        }
+        features = pipe.text_encoder.get_text_features(**text_inputs)
+        if normalize:
+            features = F.normalize(features, dim=-1)
+        return features.detach().cpu()
+
+    @torch.no_grad()
+    def compute_text_audio_similarity(
+        self,
+        texts: str | list[str],
+        waveform: torch.Tensor,
+        *,
+        sample_rate: int | None = None,
+    ) -> torch.Tensor:
+        text_features = self.get_text_features(texts, normalize=True)
+        audio_features = self.get_audio_features(waveform, sample_rate=sample_rate, normalize=True)
+        if text_features.shape[0] == 1 and audio_features.shape[0] > 1:
+            text_features = text_features.expand(audio_features.shape[0], -1)
+        if text_features.shape != audio_features.shape:
+            raise RuntimeError(
+                f"Text/audio feature shape mismatch: {tuple(text_features.shape)} vs {tuple(audio_features.shape)}"
+            )
+        return (text_features * audio_features).sum(dim=-1)
+
+    @torch.no_grad()
     def compute_audio_similarity(
         self,
         waveform_a: torch.Tensor,
