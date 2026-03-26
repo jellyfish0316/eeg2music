@@ -29,6 +29,10 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+import h5py  # type: ignore
+import numpy as np  # type: ignore
+from scipy.io import savemat  # type: ignore
+
 RAW_TO_CLEAN_SUBJECT = {
     2: 0,
     3: 1,
@@ -66,35 +70,7 @@ SONG_DURATION_S = {
 }
 
 
-def _import_or_exit():
-    missing: list[str] = []
-    try:
-        import h5py  # type: ignore
-    except ImportError:
-        h5py = None
-        missing.append("h5py")
-
-    try:
-        import numpy as np  # type: ignore
-    except ImportError:
-        np = None
-        missing.append("numpy")
-
-    try:
-        from scipy.io import savemat  # type: ignore
-    except ImportError:
-        savemat = None
-        missing.append("scipy")
-
-    if missing:
-        deps = ", ".join(missing)
-        raise SystemExit(
-            f"Missing Python dependencies: {deps}. "
-            "Install them in the environment that will preprocess raw NMED-T files."
-        )
-    return h5py, np, savemat
-
-
+# Inspect helpers
 def _walk_hdf5(obj, prefix: str = "") -> Iterable[tuple[str, str, tuple[int, ...] | None, str | None]]:
     for key in obj.keys():
         item = obj[key]
@@ -182,7 +158,6 @@ def _collect_first_col_strings(dataset, h5_file, np, limit: int | None = None) -
 
 
 def inspect_raw_file(path: Path, *, preview_rows: int = 8) -> None:
-    h5py, np, _ = _import_or_exit()
     with h5py.File(path, "r") as f:
         for key_path, kind, shape, dtype in _walk_hdf5(f):
             if kind == "dataset":
@@ -212,29 +187,31 @@ def inspect_raw_file(path: Path, *, preview_rows: int = 8) -> None:
                 print(f"{key_path}\tgroup")
 
 
+# Raw HDF5 read helpers
+
+
+def _require_hdf5_key(h5_file, key: str, file_path: Path):
+    if key not in h5_file:
+        raise KeyError(f"Key '{key}' not found in {file_path}.")
+    return h5_file[key]
+
+
 def _read_dataset(file_path: Path, key: str):
-    h5py, np, _ = _import_or_exit()
     with h5py.File(file_path, "r") as f:
-        if key not in f:
-            raise KeyError(f"Key '{key}' not found in {file_path}. Run inspect mode first.")
-        arr = np.array(f[key])
-    return arr
+        try:
+            return np.array(_require_hdf5_key(f, key, file_path))
+        except KeyError as exc:
+            raise KeyError(f"{exc.args[0]} Run inspect mode first.") from exc
 
 
 def _read_hdf5_scalar(file_path: Path, key: str):
-    h5py, np, _ = _import_or_exit()
     with h5py.File(file_path, "r") as f:
-        if key not in f:
-            raise KeyError(f"Key '{key}' not found in {file_path}.")
-        return _read_scalar_like(f[key], f, np)
+        return _read_scalar_like(_require_hdf5_key(f, key, file_path), f, np)
 
 
 def _read_hdf5_object_rows(file_path: Path, key: str) -> list[list[object]]:
-    h5py, np, _ = _import_or_exit()
     with h5py.File(file_path, "r") as f:
-        if key not in f:
-            raise KeyError(f"Key '{key}' not found in {file_path}.")
-        ds = f[key]
+        ds = _require_hdf5_key(f, key, file_path)
         raw = np.array(ds)
         if raw.dtype != object:
             raise ValueError(f"Expected object dataset for {key}, got {raw.dtype}.")
@@ -251,6 +228,9 @@ def _read_hdf5_object_rows(file_path: Path, key: str) -> list[list[object]]:
                 row.append(_read_scalar_like(f[ref], f, np))
             rows.append(row)
         return rows
+
+
+# EEG preprocessing helpers
 
 
 def _std_clamp(signal, clamp_std: float, np):
@@ -298,21 +278,26 @@ def _center_using_first_samples(signal, center_n: int, np):
     return (signal - baseline).astype(np.float32, copy=False)
 
 
-def _parse_song_map(text: str) -> dict[str, list[str]]:
-    """
-    Example:
-      '{"02_1_raw.mat":["song21","song22"],"02_2_raw.mat":["song23","song24"]}'
-    """
-    parsed = json.loads(text)
-    if not isinstance(parsed, dict):
-        raise ValueError("recording-song-map must be a JSON object.")
+def _preprocess_song_signal(
+    song_signal,
+    *,
+    robust_scale: bool,
+    center_using_first_samples: int,
+    clamp_std: float | None,
+    src_fs: int,
+    dst_fs: int,
+    np,
+):
+    if robust_scale:
+        song_signal = _robust_scale(song_signal, np)
+    song_signal = _center_using_first_samples(song_signal, center_using_first_samples, np)
+    if clamp_std is not None:
+        song_signal = _std_clamp(song_signal, clamp_std, np)
+    song_signal = _downsample_linear(song_signal, src_fs=src_fs, dst_fs=dst_fs, np=np)
+    return song_signal.astype(np.float32, copy=False)
 
-    normalized: dict[str, list[str]] = {}
-    for k, v in parsed.items():
-        if not isinstance(v, list) or not all(isinstance(item, str) for item in v):
-            raise ValueError("Each recording-song-map value must be a list of song names.")
-        normalized[str(k)] = [str(item) for item in v]
-    return normalized
+
+# Conversion helpers
 
 
 def _parse_trigger_label(label: object) -> int | None:
@@ -385,33 +370,17 @@ def convert_recordings(
     raw_dir: Path,
     output_dir: Path,
     eeg_key: str,
-    recording_song_map: dict[str, list[str]] | None,
     src_fs: int,
     dst_fs: int,
-    seconds_per_song: float,
     clamp_std: float | None,
     din_key: str = "DIN_1",
-    use_nmedt_triggers: bool = False,
     keep_eeg_channels: int = 124,
     output_suffix: str = "Processed",
     center_using_first_samples: int = 1000,
-    robust_scale: bool = False,
+    robust_scale: bool = True,
 ) -> None:
-    _, np, savemat = _import_or_exit()
-
     song_accumulator: dict[str, dict[int, np.ndarray]] = {}
-    samples_per_song_src = int(round(seconds_per_song * src_fs)) if seconds_per_song > 0 else 0
-
-    if not use_nmedt_triggers and recording_song_map is None:
-        raise ValueError("Provide recording_song_map or set --use-nmedt-triggers.")
-
-    if not use_nmedt_triggers and samples_per_song_src <= 0:
-        raise ValueError("seconds-per-song must produce a positive sample count.")
-
-    if use_nmedt_triggers:
-        recording_paths = sorted(raw_dir.glob("*_raw.mat"))
-    else:
-        recording_paths = [raw_dir / name for name in sorted(recording_song_map or {})]
+    recording_paths = sorted(raw_dir.glob("*_raw.mat"))
 
     for recording_path in recording_paths:
         if not recording_path.exists():
@@ -435,60 +404,39 @@ def convert_recordings(
             )
         clean_subject = RAW_TO_CLEAN_SUBJECT[raw_subject]
 
-        if use_nmedt_triggers:
-            file_fs = _read_hdf5_scalar(recording_path, "fs")
-            if int(round(float(file_fs))) != int(src_fs):
-                raise ValueError(
-                    f"{recording_path.name} fs={file_fs} disagrees with --src-fs={src_fs}."
-                )
+        file_fs = _read_hdf5_scalar(recording_path, "fs")
+        if int(round(float(file_fs))) != int(src_fs):
+            raise ValueError(
+                f"{recording_path.name} fs={file_fs} disagrees with --src-fs={src_fs}."
+            )
 
-            events = _parse_din_events(recording_path, din_key)
-            song_events = [e for e in events if e["trigger"] in SONG_DURATION_S]
-            click_samples = [int(e["sample"]) for e in events if e["trigger"] == 128]
-            if not song_events:
-                continue
+        events = _parse_din_events(recording_path, din_key)
+        song_events = [e for e in events if e["trigger"] in SONG_DURATION_S]
+        click_samples = [int(e["sample"]) for e in events if e["trigger"] == 128]
+        if not song_events:
+            continue
 
-            for event in song_events:
-                trigger = int(event["trigger"])
-                song_name = f"song{trigger}"
-                start = _find_click_corrected_onset(int(event["sample"]), click_samples, src_fs)
-                duration_samples = int(round(SONG_DURATION_S[trigger] * src_fs))
-                stop = start + duration_samples
-                if start < 0 or stop > eeg.shape[1]:
-                    raise ValueError(
-                        f"{recording_path.name} {song_name} slice [{start}:{stop}] is outside EEG length {eeg.shape[1]}."
-                    )
-                song_signal = eeg[:, start:stop]
-                if robust_scale:
-                    song_signal = _robust_scale(song_signal, np)
-                song_signal = _center_using_first_samples(song_signal, center_using_first_samples, np)
-                if clamp_std is not None:
-                    song_signal = _std_clamp(song_signal, clamp_std, np)
-                song_signal = _downsample_linear(song_signal, src_fs=src_fs, dst_fs=dst_fs, np=np)
-                song_signal = song_signal.astype(np.float32, copy=False)
-                song_accumulator.setdefault(song_name, {})[clean_subject] = song_signal
-        else:
-            songs = (recording_song_map or {})[recording_path.name]
-            expected_total = samples_per_song_src * len(songs)
-            if eeg.shape[1] < expected_total:
+        for event in song_events:
+            trigger = int(event["trigger"])
+            song_name = f"song{trigger}"
+            start = _find_click_corrected_onset(int(event["sample"]), click_samples, src_fs)
+            duration_samples = int(round(SONG_DURATION_S[trigger] * src_fs))
+            stop = start + duration_samples
+            if start < 0 or stop > eeg.shape[1]:
                 raise ValueError(
-                    f"{recording_path.name} has only {eeg.shape[1]} time samples, but "
-                    f"{len(songs)} songs x {samples_per_song_src} samples/song "
-                    f"requires at least {expected_total}. "
-                    "Update recording-song-map or seconds-per-song."
+                    f"{recording_path.name} {song_name} slice [{start}:{stop}] is outside EEG length {eeg.shape[1]}."
                 )
-            for song_index, song_name in enumerate(songs):
-                start = song_index * samples_per_song_src
-                stop = start + samples_per_song_src
-                song_signal = eeg[:, start:stop]
-                if robust_scale:
-                    song_signal = _robust_scale(song_signal, np)
-                song_signal = _center_using_first_samples(song_signal, center_using_first_samples, np)
-                if clamp_std is not None:
-                    song_signal = _std_clamp(song_signal, clamp_std, np)
-                song_signal = _downsample_linear(song_signal, src_fs=src_fs, dst_fs=dst_fs, np=np)
-                song_signal = song_signal.astype(np.float32, copy=False)
-                song_accumulator.setdefault(song_name, {})[clean_subject] = song_signal
+            song_signal = eeg[:, start:stop]
+            song_signal = _preprocess_song_signal(
+                song_signal,
+                robust_scale=robust_scale,
+                center_using_first_samples=center_using_first_samples,
+                clamp_std=clamp_std,
+                src_fs=src_fs,
+                dst_fs=dst_fs,
+                np=np,
+            )
+            song_accumulator.setdefault(song_name, {})[clean_subject] = song_signal
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -520,6 +468,9 @@ def convert_recordings(
         print(f"saved {out_path} key={data_key} shape={stacked.shape}")
 
 
+# CLI
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Inspect raw NMED-T MATLAB v7.3 files and convert them to song-level mats."
@@ -548,15 +499,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Root-level HDF5 key containing the raw EEG array. Use inspect mode first.",
     )
     convert_parser.add_argument(
-        "--recording-song-map",
-        type=str,
-        default=None,
-        help=(
-            "JSON object mapping each raw recording filename to the ordered songs it contains. "
-            'Example: {"02_1_raw.mat":["song21","song22"],"02_2_raw.mat":["song23","song24"]}'
-        ),
-    )
-    convert_parser.add_argument(
         "--src-fs",
         type=int,
         default=1000,
@@ -569,12 +511,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sampling rate for model-ready output files. Default matches current repo assumptions.",
     )
     convert_parser.add_argument(
-        "--seconds-per-song",
-        type=float,
-        default=0.0,
-        help="Duration of each contiguous song block in the raw recordings, in seconds.",
-    )
-    convert_parser.add_argument(
         "--clamp-std",
         type=float,
         default=20.0,
@@ -585,11 +521,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="DIN_1",
         help="Root-level HDF5 key containing raw trigger events.",
-    )
-    convert_parser.add_argument(
-        "--use-nmedt-triggers",
-        action="store_true",
-        help="Auto-detect song segments from NMED-T trigger codes 21..30 in DIN_1.",
     )
     convert_parser.add_argument(
         "--keep-eeg-channels",
@@ -630,18 +561,14 @@ def main() -> None:
         return
 
     if args.command == "convert":
-        recording_song_map = _parse_song_map(args.recording_song_map) if args.recording_song_map else None
         convert_recordings(
             raw_dir=args.raw_dir,
             output_dir=args.output_dir,
             eeg_key=args.eeg_key,
-            recording_song_map=recording_song_map,
             src_fs=args.src_fs,
             dst_fs=args.dst_fs,
-            seconds_per_song=args.seconds_per_song,
             clamp_std=args.clamp_std,
             din_key=args.din_key,
-            use_nmedt_triggers=bool(args.use_nmedt_triggers),
             keep_eeg_channels=int(args.keep_eeg_channels),
             output_suffix=str(args.output_suffix),
             center_using_first_samples=int(args.center_using_first_samples),
