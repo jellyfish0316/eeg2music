@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
+import scipy.linalg
 import soundfile as sf
 import torch
 
@@ -96,12 +97,16 @@ def compute_frechet_distance(x: torch.Tensor, y: torch.Tensor) -> float:
     sigma_y = np.cov(y_np, rowvar=False)
 
     diff = mu_x - mu_y
-    cov_prod = sigma_x @ sigma_y
-    eigvals, eigvecs = np.linalg.eigh(cov_prod)
-    eigvals = np.clip(eigvals, a_min=0.0, a_max=None)
-    sqrt_cov_prod = eigvecs @ np.diag(np.sqrt(eigvals)) @ eigvecs.T
-    trace_term = np.trace(sigma_x + sigma_y - 2.0 * sqrt_cov_prod)
-    return float(diff @ diff + trace_term)
+    eps = 1e-6
+    sigma_x = sigma_x + np.eye(sigma_x.shape[0], dtype=np.float64) * eps
+    sigma_y = sigma_y + np.eye(sigma_y.shape[0], dtype=np.float64) * eps
+    covmean, _ = scipy.linalg.sqrtm(sigma_x @ sigma_y, disp=False)
+    if np.iscomplexobj(covmean):
+        if not np.allclose(np.imag(covmean), 0.0, atol=1e-6):
+            raise RuntimeError("Frechet covariance sqrt produced non-negligible imaginary components.")
+        covmean = np.real(covmean)
+    fid = float(diff @ diff + np.trace(sigma_x + sigma_y - 2.0 * covmean))
+    return max(fid, 0.0)
 
 
 def main() -> None:
