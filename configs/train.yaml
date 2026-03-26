@@ -16,6 +16,19 @@ data:
       mat_path: data/EEG_processed/song21_Processed.mat
       audio_path: data/songs/song21_16k.wav
       data_key: data21
+#     condition_sources:
+#       passive:
+#         mat_path: data/EEG/song21_Imputed.mat
+#         data_key: data21
+#       drum:
+#         mat_path: data/EEG/song21_Imputed.mat
+#         data_key: data21
+#       guitar:
+#         mat_path: data/EEG/song21_Imputed.mat
+#         data_key: data21
+#       vocal:
+#         mat_path: data/EEG/song21_Imputed.mat
+#         data_key: data21
     - name: song22
       mat_path: data/EEG_processed/song22_Processed.mat
       audio_path: data/songs/song22_16k.wav
@@ -53,24 +66,6 @@ data:
       audio_path: data/songs/song30_16k.wav
       data_key: data30
 
-  # Leave condition_sources unset for now so each song falls back to its own
-  # mat_path/data_key. We can wire condition-specific sources later.
-  condition_sources: null
-  # Condition-specific EEG sources; replace with your own files/keys.
-  # condition_sources:
-  #   passive:
-  #     mat_path: data/EEG/song21_Imputed.mat
-  #     data_key: data21
-  #   drum:
-  #     mat_path: data/EEG/song21_Imputed.mat
-  #     data_key: data21
-  #   guitar:
-  #     mat_path: data/EEG/song21_Imputed.mat
-  #     data_key: data21
-  #   vocal:
-  #     mat_path: data/EEG/song21_Imputed.mat
-  #     data_key: data21
-  
   eeg_time: 3500
   audio_samples: 56000
   chunk_sec: 3.5
