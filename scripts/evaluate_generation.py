@@ -77,7 +77,7 @@ def main() -> None:
         per_sample.append(item)
         by_condition.setdefault(str(row["condition_name"]), []).append(score)
         pair_key = (
-            int(row["fold_index"]),
+            int(row.get("fold_index", 0)),
             int(row.get("song_idx", 0)),
             int(row["subject_idx"]),
             int(row["chunk_idx"]),

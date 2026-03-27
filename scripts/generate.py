@@ -14,7 +14,6 @@ import torch
 from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
 from scripts.train import build_condition_jobs, build_dataloader, build_model_from_dataset, load_config
 from utils.generation import generate_latents, save_waveforms
-from utils.loso import create_loso_subject_splits
 from utils.seed import set_seed
 
 
@@ -22,9 +21,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate decoded music from EEG using a trained checkpoint")
     p.add_argument("--config", type=str, default="configs/train.yaml")
     p.add_argument("--checkpoint", type=str, required=True)
-    p.add_argument("--fold", type=int, default=0)
     p.add_argument("--condition", type=str, required=True)
-    p.add_argument("--split", type=str, choices=["train", "val", "test"], default="test")
+    p.add_argument("--split", type=str, choices=["train", "val", "test", "ood_test"], default="test")
     p.add_argument("--num-inference-steps", type=int, default=50)
     p.add_argument("--max-batches", type=int, default=None)
     p.add_argument("--output-dir", type=str, default="outputs/generated_audio")
@@ -43,29 +41,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def resolve_fold_split(cfg: dict, fold_index: int) -> dict:
-    exp_cfg = cfg.get("experiment", {})
-    split_cfg = cfg.get("split", {})
-    ds_probe, _ = build_dataloader(
-        cfg,
-        condition_type="passive",
-        subjects=None,
-        shuffle=False,
-    )
-    total_subjects = int(ds_probe.total_subjects)
-    num_folds = exp_cfg.get("num_folds", total_subjects)
-    splits = create_loso_subject_splits(
-        total_subjects=total_subjects,
-        val_ratio=float(split_cfg.get("val_ratio", 0.1)),
-        seed=int(exp_cfg.get("seed", cfg.get("seed", 42))),
-        num_folds=int(num_folds),
-    )
-    matches = [s for s in splits if int(s["fold_index"]) == int(fold_index)]
-    if len(matches) == 0:
-        raise ValueError(f"No split found for fold={fold_index}")
-    return matches[0]
-
-
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -75,22 +50,29 @@ def main() -> None:
         cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
     )
 
-    fold_meta = resolve_fold_split(cfg, args.fold)
     jobs = build_condition_jobs(cfg.get("experiment", {}))
     condition_matches = [j for j in jobs if j["condition_name"] == args.condition]
     if len(condition_matches) == 0:
         raise ValueError(f"Unknown condition {args.condition!r}; available={[j['condition_name'] for j in jobs]}")
     job = condition_matches[0]
 
-    subject_key = {
-        "train": "train_subjects",
-        "val": "val_subjects",
-        "test": "test_subjects",
-    }[args.split]
+    ds_probe, _ = build_dataloader(
+        cfg,
+        condition_type="passive",
+        subjects=None,
+        shuffle=False,
+    )
+    total_subjects = int(ds_probe.total_subjects)
+    subject_indices = cfg.get("split", {}).get("subject_indices")
+    if subject_indices is None:
+        selected_subjects = list(range(total_subjects))
+    else:
+        selected_subjects = sorted({int(s) for s in subject_indices})
+
     dataset, loader = build_dataloader(
         cfg,
         condition_type=job["condition_type"],
-        subjects=fold_meta[subject_key],
+        subjects=selected_subjects,
         shuffle=False,
         chunk_split_name=args.split,
     )
@@ -149,7 +131,7 @@ def main() -> None:
             song_idx = int(batch["song_idx"][i].item()) if "song_idx" in batch else 0
             song_name = batch["song_name"][i] if "song_name" in batch else "song"
             names.append(
-                f"fold{args.fold:02d}_{args.condition}_{args.split}_{song_name}_song{song_idx:02d}_subj{subj:02d}_chunk{chunk:04d}.wav"
+                f"{args.condition}_{args.split}_{song_name}_song{song_idx:02d}_subj{subj:02d}_chunk{chunk:04d}.wav"
             )
 
         generated_paths = save_waveforms(
@@ -168,7 +150,6 @@ def main() -> None:
         for i, name in enumerate(names):
             manifest_rows.append(
                 {
-                    "fold_index": int(args.fold),
                     "condition_name": args.condition,
                     "split": args.split,
                     "song_idx": int(batch["song_idx"][i].item()) if "song_idx" in batch else 0,
@@ -191,7 +172,6 @@ def main() -> None:
         "meta": {
             "config": str(Path(args.config).resolve()),
             "checkpoint": str(Path(args.checkpoint).resolve()),
-            "fold_index": int(args.fold),
             "condition_name": args.condition,
             "split": args.split,
             "num_inference_steps": int(args.num_inference_steps),

@@ -3,8 +3,6 @@ seed: 42
 experiment:
   conditions: [passive]
   seed: 42
-  num_folds: 10
-  fold_index: 0
 
 data:
   # Optional multi-song mode for paper-style validation across NMED-T.
@@ -109,8 +107,6 @@ diffusion:
   beta_end: 0.02
 
 split:
-  loso:
-    enabled: false
   # Optional zero-based dataset subject subset.
   # For a paper-style single-subject run, set e.g. [1] if your mats store "subject 2"
   # at dataset index 1.
@@ -120,11 +116,14 @@ split:
   song_splits:
     train: [song22, song23, song24, song25, song26, song27, song28, song29, song30]
     val: [song22, song23, song24, song25, song26, song27, song28, song29, song30]
-    test: [song21]
+    test: [song22, song23, song24, song25, song26, song27, song28, song29, song30]
+  ood_song_splits:
+    ood_test: [song21]
   chunk_splits:
     train: [0.0, 0.8]
     val: [0.8, 0.9]
     test: [0.9, 1.0]
+    ood_test: [0.0, 1.0]
 
 train:
   device: cuda
@@ -138,6 +137,5 @@ train:
   validation_num_inference_steps: 25
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
-  run_mode: single_fold
   output_root: outputs/paperaligned_subject2
   checkpoint_name: model.pt

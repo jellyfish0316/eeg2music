@@ -17,7 +17,6 @@ from torch.utils.data import DataLoader
 from datasets.condition_nmedt_dataset import ConditionNMEDTDataset
 from models.eeg_conditioned_audioldm2 import EEGConditionedAudioLDM2
 from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
-from utils.loso import create_loso_subject_splits
 from utils.generation import batch_clap_similarity, generate_latents
 from utils.seed import set_seed
 
@@ -41,10 +40,8 @@ def validate_model_config(model_cfg: dict) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Condition-aware LOSO trainer")
+    p = argparse.ArgumentParser(description="Passive EEG trainer")
     p.add_argument("--config", type=str, default="configs/train.yaml")
-    p.add_argument("--fold", type=int, default=None, help="Run a single fold index")
-    p.add_argument("--all-folds", action="store_true", help="Run all LOSO folds")
     p.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch")
     return p.parse_args()
 
@@ -143,16 +140,19 @@ def build_dataloader(
     split_cfg = cfg.get("split", {})
     use_precomputed_latents = bool(latent_cfg.get("enabled", False))
     chunk_splits = split_cfg.get("chunk_splits", {})
-    chunk_range = tuple(chunk_splits.get(chunk_split_name, [0.0, 1.0]))
+    chunk_range = tuple(chunk_splits.get(chunk_split_name, chunk_splits.get("test", [0.0, 1.0])))
     songs = data_cfg.get("songs")
-    song_splits = split_cfg.get("song_splits", {})
+    if chunk_split_name == "ood_test":
+        song_splits = split_cfg.get("ood_song_splits", {})
+    else:
+        song_splits = split_cfg.get("song_splits", {})
     selected_song_names = song_splits.get(chunk_split_name)
     if songs and selected_song_names is not None:
         selected_set = {str(name) for name in selected_song_names}
         songs = [song for song in songs if str(song.get("name")) in selected_set]
         if len(songs) == 0:
             raise ValueError(
-                f"split.song_splits.{chunk_split_name} selected no songs. "
+                f"split.{ 'ood_song_splits' if chunk_split_name == 'ood_test' else 'song_splits' }.{chunk_split_name} selected no songs. "
                 f"requested={list(selected_song_names)}"
             )
 
@@ -359,7 +359,7 @@ def evaluate_generation_clap(
 def run_one_condition(
     cfg: dict,
     *,
-    fold_meta: dict,
+    split_meta: dict,
     condition_job: dict[str, str],
     device: torch.device,
     output_dir: Path,
@@ -378,23 +378,30 @@ def run_one_condition(
     ds_train, dl_train = build_dataloader(
         cfg,
         condition_type=condition_type,
-        subjects=fold_meta["train_subjects"],
+        subjects=split_meta["train_subjects"],
         shuffle=True,
         chunk_split_name="train",
     )
     ds_val, dl_val = build_dataloader(
         cfg,
         condition_type=condition_type,
-        subjects=fold_meta["val_subjects"],
+        subjects=split_meta["val_subjects"],
         shuffle=False,
         chunk_split_name="val",
     )
     ds_test, dl_test = build_dataloader(
         cfg,
         condition_type=condition_type,
-        subjects=fold_meta["test_subjects"],
+        subjects=split_meta["test_subjects"],
         shuffle=False,
         chunk_split_name="test",
+    )
+    ds_ood_test, dl_ood_test = build_dataloader(
+        cfg,
+        condition_type=condition_type,
+        subjects=split_meta["test_subjects"],
+        shuffle=False,
+        chunk_split_name="ood_test",
     )
 
     model = build_model_from_dataset(cfg, dataset=ds_train, device=device)
@@ -406,8 +413,8 @@ def run_one_condition(
     )
 
     print(
-        f"[fold {fold_meta['fold_index']}][{condition_name}] "
-        f"train={len(ds_train)} val={len(ds_val)} test={len(ds_test)} "
+        f"[{condition_name}] "
+        f"train={len(ds_train)} val={len(ds_val)} test={len(ds_test)} ood_test={len(ds_ood_test)} "
         f"model_params={sum(p.numel() for p in model.parameters())} "
         f"trainable={freeze_stats['total_trainable']}",
         flush=True,
@@ -492,7 +499,7 @@ def run_one_condition(
 
             if step % log_every == 0:
                 print(
-                    f"[fold {fold_meta['fold_index']}][{condition_name}] "
+                    f"[{condition_name}] "
                     f"[ep {epoch:02d} st {step:04d}] "
                     f"loss={loss.item():.6f} step_s={time.perf_counter()-t0:.2f} "
                     f"use_control={bool(out['use_control'].item())}",
@@ -524,25 +531,26 @@ def run_one_condition(
             best_metric_value = float(current_metric)
             torch.save(model.state_dict(), best_ckpt_path)
         print(
-            f"[fold {fold_meta['fold_index']}][{condition_name}] epoch={epoch} "
+            f"[{condition_name}] epoch={epoch} "
             f"train_loss={train_loss:.6f} val_loss={val_loss:.6f} val_clap={val_clap:.6f}",
             flush=True,
         )
 
     test_loss = evaluate_loss(model, dl_test, device, control_cfg, max_steps=max_steps)
+    ood_test_loss = evaluate_loss(model, dl_ood_test, device, control_cfg, max_steps=max_steps)
     ckpt_name = cfg["train"].get("checkpoint_name", "model.pt")
     ckpt_path = output_dir / ckpt_name
     torch.save(model.state_dict(), ckpt_path)
 
     return {
-        "fold_index": int(fold_meta["fold_index"]),
         "condition_name": condition_name,
         "condition_type": condition_type,
-        "train_subjects": fold_meta["train_subjects"],
-        "val_subjects": fold_meta["val_subjects"],
-        "test_subjects": fold_meta["test_subjects"],
+        "train_subjects": split_meta["train_subjects"],
+        "val_subjects": split_meta["val_subjects"],
+        "test_subjects": split_meta["test_subjects"],
         "history": history,
         "test_loss": test_loss,
+        "ood_test_loss": ood_test_loss,
         "best_metric_name": best_metric_name,
         "best_metric_value": float(best_metric_value),
         "trainable_params": int(freeze_stats["total_trainable"]),
@@ -573,11 +581,9 @@ def main():
         flush=True,
     )
 
-    exp_cfg = cfg.get("experiment", {})
     split_cfg = cfg.get("split", {})
-    data_cfg = cfg["data"]
 
-    # Build a temporary dataset only to read total_subjects for LOSO.
+    # Build a temporary dataset only to read total_subjects.
     ds_probe, _ = build_dataloader(
         cfg,
         condition_type="passive",
@@ -593,87 +599,36 @@ def main():
     effective_subjects = list(range(total_subjects)) if subject_subset is None else subject_subset
     print("effective_subjects:", effective_subjects, flush=True)
 
-    if bool(split_cfg.get("loso", {}).get("enabled", True)):
-        num_folds = exp_cfg.get("num_folds", None)
-        if num_folds is None:
-            num_folds = total_subjects
-        splits = create_loso_subject_splits(
-            total_subjects=total_subjects,
-            val_ratio=float(split_cfg.get("val_ratio", 0.1)),
-            seed=int(exp_cfg.get("seed", cfg.get("seed", 42))),
-            num_folds=int(num_folds),
-        )
-        if subject_subset is not None:
-            filtered_splits = []
-            for split in splits:
-                train_subjects = [s for s in split["train_subjects"] if s in subject_subset]
-                val_subjects = [s for s in split["val_subjects"] if s in subject_subset]
-                test_subjects = [s for s in split["test_subjects"] if s in subject_subset]
-                if len(train_subjects) == 0 or len(val_subjects) == 0 or len(test_subjects) == 0:
-                    continue
-                filtered_splits.append(
-                    {
-                        **split,
-                        "train_subjects": train_subjects,
-                        "val_subjects": val_subjects,
-                        "test_subjects": test_subjects,
-                    }
-                )
-            splits = filtered_splits
-    else:
-        all_subjects = effective_subjects
-        splits = [
-            {
-                "fold_index": 0,
-                "test_subject": -1,
-                "train_subjects": all_subjects,
-                "val_subjects": all_subjects[: max(1, int(0.1 * len(all_subjects)))],
-                "test_subjects": all_subjects,
-            }
-        ]
+    split_meta = {
+        "train_subjects": effective_subjects,
+        "val_subjects": effective_subjects,
+        "test_subjects": effective_subjects,
+    }
 
-    run_mode = str(cfg["train"].get("run_mode", "single_fold"))
-    if args.fold is not None:
-        splits = [s for s in splits if int(s["fold_index"]) == int(args.fold)]
-        if len(splits) == 0:
-            raise ValueError(f"No split found for fold={args.fold}")
-    elif args.all_folds or run_mode == "all_folds":
-        pass
-    else:
-        fold_index = exp_cfg.get("fold_index", 0)
-        splits = [s for s in splits if int(s["fold_index"]) == int(fold_index)]
-        if len(splits) == 0:
-            raise ValueError(f"No split found for fold_index={fold_index}")
-
-    condition_jobs = build_condition_jobs(exp_cfg)
+    condition_jobs = build_condition_jobs(cfg.get("experiment", {}))
     print("condition_jobs:", [x["condition_name"] for x in condition_jobs], flush=True)
 
-    output_root = Path(cfg["train"].get("output_root", "outputs/loso_runs"))
+    output_root = Path(cfg["train"].get("output_root", "outputs/passive_runs"))
     output_root.mkdir(parents=True, exist_ok=True)
 
     results: list[dict[str, object]] = []
-    for split in splits:
-        fold_dir = output_root / f"fold_{int(split['fold_index']):02d}"
-        fold_dir.mkdir(parents=True, exist_ok=True)
-        for job in condition_jobs:
-            cond_dir = fold_dir / job["condition_name"]
-            cond_dir.mkdir(parents=True, exist_ok=True)
+    for job in condition_jobs:
+        cond_dir = output_root / job["condition_name"]
+        cond_dir.mkdir(parents=True, exist_ok=True)
 
-            result = run_one_condition(
-                cfg,
-                fold_meta=split,
-                condition_job=job,
-                device=device,
-                output_dir=cond_dir,
-                max_steps=args.max_steps,
-            )
-            results.append(result)
-            # save latest model stats only (state_dict persistence can be added later if needed)
-            with open(cond_dir / "result.json", "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-            # save path marker for compatibility
-            with open(cond_dir / "checkpoint_path.txt", "w", encoding="utf-8") as f:
-                f.write(str(result["checkpoint_path"]) + "\n")
+        result = run_one_condition(
+            cfg,
+            split_meta=split_meta,
+            condition_job=job,
+            device=device,
+            output_dir=cond_dir,
+            max_steps=args.max_steps,
+        )
+        results.append(result)
+        with open(cond_dir / "result.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        with open(cond_dir / "checkpoint_path.txt", "w", encoding="utf-8") as f:
+            f.write(str(result["checkpoint_path"]) + "\n")
 
     pairwise = build_pairwise_report(results)
     with open(output_root / "all_results.json", "w", encoding="utf-8") as f:
