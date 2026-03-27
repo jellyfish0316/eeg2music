@@ -82,14 +82,9 @@ class ConditionNMEDTDataset(Dataset):
     Passive-only EEG dataset.
     """
 
-    CONDITION_TO_ID = {
-        "passive": 0,
-    }
-
     def __init__(
         self,
         *,
-        condition_type: str,
         mat_path: str | None = None,
         audio_path: str | None = None,
         data_key: str = "data21",
@@ -105,10 +100,6 @@ class ConditionNMEDTDataset(Dataset):
         eeg_chunk_cache_dir: str | None = None,
     ) -> None:
         super().__init__()
-        if condition_type != "passive":
-            raise ValueError(f"Unsupported condition_type: {condition_type}. Only 'passive' is supported.")
-
-        self.condition_type = condition_type
         self.chunk_sec = float(chunk_sec)
         self.eeg_fs = int(eeg_fs)
         self.audio_fs = int(audio_fs)
@@ -495,8 +486,6 @@ class ConditionNMEDTDataset(Dataset):
             "chunk_idx": torch.tensor(chunk_idx, dtype=torch.long),
             "song_idx": torch.tensor(song_idx, dtype=torch.long),
             "song_name": song.name,
-            "condition_type": self.condition_type,
-            "condition_id": torch.tensor(self.CONDITION_TO_ID[self.condition_type], dtype=torch.long),
             "is_passive": torch.tensor(bool(is_passive)),
             "text": self.text_prompt,
         }

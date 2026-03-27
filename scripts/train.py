@@ -118,18 +118,9 @@ def derive_latent_grid(
     return encoder.infer_latent_shape(int(data_cfg["audio_samples"]))
 
 
-def build_condition_jobs(exp_cfg: dict) -> list[dict[str, str]]:
-    conditions = list(exp_cfg.get("conditions", ["passive"]))
-    invalid = [c for c in conditions if c != "passive"]
-    if invalid:
-        raise ValueError(f"Unsupported experiment.conditions={invalid}. Only 'passive' is supported.")
-    return [{"condition_name": "passive", "condition_type": "passive"}]
-
-
 def build_dataloader(
     cfg: dict,
     *,
-    condition_type: str,
     subjects: list[int],
     shuffle: bool,
     chunk_split_name: str = "train",
@@ -157,7 +148,6 @@ def build_dataloader(
             )
 
     dataset = ConditionNMEDTDataset(
-        condition_type=condition_type,
         mat_path=data_cfg.get("mat_path", "data/EEG/song21_Imputed.mat"),
         audio_path=data_cfg.get("audio_path", "data/songs/song21_16k.wav"),
         data_key=data_cfg.get("data_key", "data21"),
@@ -360,7 +350,6 @@ def run_one_condition(
     cfg: dict,
     *,
     split_meta: dict,
-    condition_job: dict[str, str],
     device: torch.device,
     output_dir: Path,
     max_steps: int | None = None,
@@ -372,33 +361,28 @@ def run_one_condition(
     control_cfg = cfg.get("controlnet", {})
     train_cfg = cfg["train"]
 
-    condition_name = condition_job["condition_name"]
-    condition_type = condition_job["condition_type"]
+    condition_name = "passive"
 
     ds_train, dl_train = build_dataloader(
         cfg,
-        condition_type=condition_type,
         subjects=split_meta["train_subjects"],
         shuffle=True,
         chunk_split_name="train",
     )
     ds_val, dl_val = build_dataloader(
         cfg,
-        condition_type=condition_type,
         subjects=split_meta["val_subjects"],
         shuffle=False,
         chunk_split_name="val",
     )
     ds_test, dl_test = build_dataloader(
         cfg,
-        condition_type=condition_type,
         subjects=split_meta["test_subjects"],
         shuffle=False,
         chunk_split_name="test",
     )
     ds_ood_test, dl_ood_test = build_dataloader(
         cfg,
-        condition_type=condition_type,
         subjects=split_meta["test_subjects"],
         shuffle=False,
         chunk_split_name="ood_test",
@@ -544,7 +528,6 @@ def run_one_condition(
 
     return {
         "condition_name": condition_name,
-        "condition_type": condition_type,
         "train_subjects": split_meta["train_subjects"],
         "val_subjects": split_meta["val_subjects"],
         "test_subjects": split_meta["test_subjects"],
@@ -586,7 +569,6 @@ def main():
     # Build a temporary dataset only to read total_subjects.
     ds_probe, _ = build_dataloader(
         cfg,
-        condition_type="passive",
         subjects=None,
         shuffle=False,
     )
@@ -605,31 +587,22 @@ def main():
         "test_subjects": effective_subjects,
     }
 
-    condition_jobs = build_condition_jobs(cfg.get("experiment", {}))
-    print("condition_jobs:", [x["condition_name"] for x in condition_jobs], flush=True)
-
     output_root = Path(cfg["train"].get("output_root", "outputs/passive_runs"))
     output_root.mkdir(parents=True, exist_ok=True)
 
-    results: list[dict[str, object]] = []
-    for job in condition_jobs:
-        cond_dir = output_root / job["condition_name"]
-        cond_dir.mkdir(parents=True, exist_ok=True)
+    result = run_one_condition(
+        cfg,
+        split_meta=split_meta,
+        device=device,
+        output_dir=output_root,
+        max_steps=args.max_steps,
+    )
+    with open(output_root / "result.json", "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    with open(output_root / "checkpoint_path.txt", "w", encoding="utf-8") as f:
+        f.write(str(result["checkpoint_path"]) + "\n")
 
-        result = run_one_condition(
-            cfg,
-            split_meta=split_meta,
-            condition_job=job,
-            device=device,
-            output_dir=cond_dir,
-            max_steps=args.max_steps,
-        )
-        results.append(result)
-        with open(cond_dir / "result.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        with open(cond_dir / "checkpoint_path.txt", "w", encoding="utf-8") as f:
-            f.write(str(result["checkpoint_path"]) + "\n")
-
+    results = [result]
     pairwise = build_pairwise_report(results)
     with open(output_root / "all_results.json", "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)

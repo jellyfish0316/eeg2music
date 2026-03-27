@@ -56,8 +56,7 @@ def main() -> None:
     )
 
     per_sample = []
-    by_condition: dict[str, list[float]] = {}
-    by_pair_key: dict[tuple[int, int, int, int], dict[str, float]] = {}
+    scores = []
     for row in rows:
         pred_audio, pred_sr = sf.read(row["generated_wav"])
         target_audio, target_sr = sf.read(row["target_wav"])
@@ -75,48 +74,26 @@ def main() -> None:
         item["pred_sample_rate"] = int(pred_sr)
         item["target_sample_rate"] = int(target_sr)
         per_sample.append(item)
-        by_condition.setdefault(str(row["condition_name"]), []).append(score)
-        pair_key = (
-            int(row.get("fold_index", 0)),
-            int(row.get("song_idx", 0)),
-            int(row["subject_idx"]),
-            int(row["chunk_idx"]),
-        )
-        by_pair_key.setdefault(pair_key, {})[str(row["condition_name"])] = score
-
-    condition_summary = {
-        condition: {
-            "count": len(values),
-            "mean_clap_audio_cosine": float(sum(values) / len(values)),
-        }
-        for condition, values in sorted(by_condition.items())
-    }
-
-    pairwise = []
-    pairwise_summary = {}
+        scores.append(score)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     per_sample_path = output_dir / "per_sample_scores.json"
     summary_path = output_dir / "summary.json"
-    pairwise_path = output_dir / "pairwise.json"
     per_sample_path.write_text(json.dumps(per_sample, ensure_ascii=False, indent=2), encoding="utf-8")
     summary_path.write_text(
         json.dumps(
             {
                 "num_samples": len(per_sample),
-                "conditions": condition_summary,
-                "pairwise_summary": pairwise_summary,
+                "mean_clap_audio_cosine": float(sum(scores) / len(scores)),
             },
             ensure_ascii=False,
             indent=2,
         ),
         encoding="utf-8",
     )
-    pairwise_path.write_text(json.dumps(pairwise, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"saved: {per_sample_path}", flush=True)
     print(f"saved: {summary_path}", flush=True)
-    print(f"saved: {pairwise_path}", flush=True)
 
 
 if __name__ == "__main__":

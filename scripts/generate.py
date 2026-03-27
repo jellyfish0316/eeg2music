@@ -52,7 +52,6 @@ def main() -> None:
 
     ds_probe, _ = build_dataloader(
         cfg,
-        condition_type="passive",
         subjects=None,
         shuffle=False,
     )
@@ -65,7 +64,6 @@ def main() -> None:
 
     dataset, loader = build_dataloader(
         cfg,
-        condition_type="passive",
         subjects=selected_subjects,
         shuffle=False,
         chunk_split_name=args.split,
