@@ -96,7 +96,7 @@ controlnet:
 
 latent_cache: 
   enabled: true
-  path: data/precomputed/nmedt_audioldm2_latents_paperaligned_v4.pt
+  path: data/precomputed/checked_byme_v1_audio_latent.pt
   latent_channels: 8
   precompute_batch_size: 16
   precompute_use_mode: true
@@ -137,5 +137,5 @@ train:
   validation_num_inference_steps: 25
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
-  output_root: outputs/paperaligned_subject2
+  output_root: outputs/checked_byme_subject2_v1
   checkpoint_name: model.pt
