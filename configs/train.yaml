@@ -55,8 +55,8 @@ data:
   chunk_sec: 3.5
   eeg_fs: 1000
   audio_fs: 16000
-  batch_size: 2
-  num_workers: 0
+  batch_size: 4
+  num_workers: 2
   text_prompt: "Pop music"
   eeg_chunk_cache_dir: data/precomputed/eeg_chunks_1khz
 
@@ -137,5 +137,5 @@ train:
   validation_num_inference_steps: 25
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
-  output_root: outputs/checked_byme_subject2_v1
+  output_root: outputs/checked_byme_subject2_v1_ep100
   checkpoint_name: model.pt
