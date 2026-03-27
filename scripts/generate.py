@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 
 from models.audioldm2_vae_wrapper import AudioLDM2VAEWrapper
-from scripts.train import build_condition_jobs, build_dataloader, build_model_from_dataset, load_config
+from scripts.train import build_dataloader, build_model_from_dataset, load_config
 from utils.generation import generate_latents, save_waveforms
 from utils.seed import set_seed
 
@@ -21,7 +21,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate decoded music from EEG using a trained checkpoint")
     p.add_argument("--config", type=str, default="configs/train.yaml")
     p.add_argument("--checkpoint", type=str, required=True)
-    p.add_argument("--condition", type=str, required=True)
     p.add_argument("--split", type=str, choices=["train", "val", "test", "ood_test"], default="test")
     p.add_argument("--num-inference-steps", type=int, default=50)
     p.add_argument("--max-batches", type=int, default=None)
@@ -49,12 +48,7 @@ def main() -> None:
     device = torch.device(
         cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
     )
-
-    jobs = build_condition_jobs(cfg.get("experiment", {}))
-    condition_matches = [j for j in jobs if j["condition_name"] == args.condition]
-    if len(condition_matches) == 0:
-        raise ValueError(f"Unknown condition {args.condition!r}; available={[j['condition_name'] for j in jobs]}")
-    job = condition_matches[0]
+    condition_name = "passive"
 
     ds_probe, _ = build_dataloader(
         cfg,
@@ -71,7 +65,7 @@ def main() -> None:
 
     dataset, loader = build_dataloader(
         cfg,
-        condition_type=job["condition_type"],
+        condition_type="passive",
         subjects=selected_subjects,
         shuffle=False,
         chunk_split_name=args.split,
@@ -131,7 +125,7 @@ def main() -> None:
             song_idx = int(batch["song_idx"][i].item()) if "song_idx" in batch else 0
             song_name = batch["song_name"][i] if "song_name" in batch else "song"
             names.append(
-                f"{args.condition}_{args.split}_{song_name}_song{song_idx:02d}_subj{subj:02d}_chunk{chunk:04d}.wav"
+                f"{condition_name}_{args.split}_{song_name}_song{song_idx:02d}_subj{subj:02d}_chunk{chunk:04d}.wav"
             )
 
         generated_paths = save_waveforms(
@@ -150,7 +144,7 @@ def main() -> None:
         for i, name in enumerate(names):
             manifest_rows.append(
                 {
-                    "condition_name": args.condition,
+                    "condition_name": condition_name,
                     "split": args.split,
                     "song_idx": int(batch["song_idx"][i].item()) if "song_idx" in batch else 0,
                     "song_name": batch["song_name"][i] if "song_name" in batch else "song",
@@ -172,7 +166,7 @@ def main() -> None:
         "meta": {
             "config": str(Path(args.config).resolve()),
             "checkpoint": str(Path(args.checkpoint).resolve()),
-            "condition_name": args.condition,
+            "condition_name": condition_name,
             "split": args.split,
             "num_inference_steps": int(args.num_inference_steps),
             "eeg_mode": args.eeg_mode,
