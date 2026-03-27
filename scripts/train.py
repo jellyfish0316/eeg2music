@@ -122,36 +122,17 @@ def derive_latent_grid(
 
 
 def build_condition_jobs(exp_cfg: dict) -> list[dict[str, str]]:
-    active = list(exp_cfg.get("active_instruments", []))
-    conditions = list(exp_cfg.get("conditions", ["multi_attention", "single_repeated", "passive_x3"]))
-    jobs: list[dict[str, str]] = []
-
-    for c in conditions:
-        if c == "single_repeated":
-            for inst in active:
-                jobs.append(
-                    {
-                        "condition_name": f"single_repeated_{inst}",
-                        "condition_type": "single_repeated",
-                        "target_instrument": inst,
-                    }
-                )
-        else:
-            jobs.append(
-                {
-                    "condition_name": c,
-                    "condition_type": c,
-                    "target_instrument": "",
-                }
-            )
-    return jobs
+    conditions = list(exp_cfg.get("conditions", ["passive"]))
+    invalid = [c for c in conditions if c != "passive"]
+    if invalid:
+        raise ValueError(f"Unsupported experiment.conditions={invalid}. Only 'passive' is supported.")
+    return [{"condition_name": "passive", "condition_type": "passive"}]
 
 
 def build_dataloader(
     cfg: dict,
     *,
     condition_type: str,
-    target_instrument: str | None,
     subjects: list[int],
     shuffle: bool,
     chunk_split_name: str = "train",
@@ -177,12 +158,9 @@ def build_dataloader(
 
     dataset = ConditionNMEDTDataset(
         condition_type=condition_type,
-        active_instruments=list(exp_cfg.get("active_instruments", ["drum", "guitar", "vocal"])),
-        target_instrument=target_instrument if target_instrument else None,
         mat_path=data_cfg.get("mat_path", "data/EEG/song21_Imputed.mat"),
         audio_path=data_cfg.get("audio_path", "data/songs/song21_16k.wav"),
         data_key=data_cfg.get("data_key", "data21"),
-        condition_sources=data_cfg.get("condition_sources", None),
         songs=songs,
         chunk_sec=float(data_cfg["chunk_sec"]),
         eeg_fs=int(data_cfg["eeg_fs"]),
@@ -396,12 +374,10 @@ def run_one_condition(
 
     condition_name = condition_job["condition_name"]
     condition_type = condition_job["condition_type"]
-    target_instrument = condition_job["target_instrument"] or None
 
     ds_train, dl_train = build_dataloader(
         cfg,
         condition_type=condition_type,
-        target_instrument=target_instrument,
         subjects=fold_meta["train_subjects"],
         shuffle=True,
         chunk_split_name="train",
@@ -409,7 +385,6 @@ def run_one_condition(
     ds_val, dl_val = build_dataloader(
         cfg,
         condition_type=condition_type,
-        target_instrument=target_instrument,
         subjects=fold_meta["val_subjects"],
         shuffle=False,
         chunk_split_name="val",
@@ -417,7 +392,6 @@ def run_one_condition(
     ds_test, dl_test = build_dataloader(
         cfg,
         condition_type=condition_type,
-        target_instrument=target_instrument,
         subjects=fold_meta["test_subjects"],
         shuffle=False,
         chunk_split_name="test",
@@ -564,7 +538,6 @@ def run_one_condition(
         "fold_index": int(fold_meta["fold_index"]),
         "condition_name": condition_name,
         "condition_type": condition_type,
-        "target_instrument": target_instrument,
         "train_subjects": fold_meta["train_subjects"],
         "val_subjects": fold_meta["val_subjects"],
         "test_subjects": fold_meta["test_subjects"],
@@ -581,30 +554,8 @@ def run_one_condition(
 
 
 def build_pairwise_report(results: list[dict[str, object]]) -> list[dict[str, object]]:
-    report = []
-    by_fold: dict[int, list[dict[str, object]]] = {}
-    for r in results:
-        by_fold.setdefault(int(r["fold_index"]), []).append(r)
-
-    for fold_idx, fold_rows in by_fold.items():
-        passive = [x for x in fold_rows if x["condition_name"] == "passive_x3"]
-        if len(passive) == 0:
-            continue
-        base = passive[0]
-        base_loss = float(base["test_loss"])
-        for row in fold_rows:
-            if row["condition_name"] == "passive_x3":
-                continue
-            report.append(
-                {
-                    "fold_index": fold_idx,
-                    "compare": f"{row['condition_name']} vs passive_x3",
-                    "test_loss_condition": float(row["test_loss"]),
-                    "test_loss_passive": base_loss,
-                    "delta_condition_minus_passive": float(row["test_loss"]) - base_loss,
-                }
-            )
-    return report
+    del results
+    return []
 
 
 def main():
@@ -629,8 +580,7 @@ def main():
     # Build a temporary dataset only to read total_subjects for LOSO.
     ds_probe, _ = build_dataloader(
         cfg,
-        condition_type="passive_x3",
-        target_instrument=None,
+        condition_type="passive",
         subjects=None,
         shuffle=False,
     )

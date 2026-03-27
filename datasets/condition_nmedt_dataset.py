@@ -79,29 +79,20 @@ def _get_mat_shape(
 
 class ConditionNMEDTDataset(Dataset):
     """
-    Condition-aware EEG dataset supporting:
-      - multi_attention
-      - single_repeated
-      - passive_x3
-    Output EEG channels are always 3x base channels by design.
+    Passive-only EEG dataset.
     """
 
     CONDITION_TO_ID = {
-        "multi_attention": 0,
-        "single_repeated": 1,
-        "passive_x3": 2,
+        "passive": 0,
     }
 
     def __init__(
         self,
         *,
         condition_type: str,
-        active_instruments: list[str],
-        target_instrument: str | None,
         mat_path: str | None = None,
         audio_path: str | None = None,
         data_key: str = "data21",
-        condition_sources: dict[str, dict[str, str]] | None = None,
         songs: list[dict[str, Any]] | None = None,
         chunk_sec: float = 3.5,
         eeg_fs: int = 125,
@@ -114,18 +105,10 @@ class ConditionNMEDTDataset(Dataset):
         eeg_chunk_cache_dir: str | None = None,
     ) -> None:
         super().__init__()
-        if condition_type not in self.CONDITION_TO_ID:
-            raise ValueError(f"Unsupported condition_type: {condition_type}")
-        if len(active_instruments) == 0:
-            raise ValueError("active_instruments cannot be empty.")
-        if condition_type == "single_repeated" and target_instrument is None:
-            raise ValueError("target_instrument is required for single_repeated.")
-        if condition_type == "single_repeated" and target_instrument not in active_instruments:
-            raise ValueError(f"target_instrument={target_instrument} not in active_instruments={active_instruments}")
+        if condition_type != "passive":
+            raise ValueError(f"Unsupported condition_type: {condition_type}. Only 'passive' is supported.")
 
         self.condition_type = condition_type
-        self.active_instruments = list(active_instruments)
-        self.target_instrument = target_instrument
         self.chunk_sec = float(chunk_sec)
         self.eeg_fs = int(eeg_fs)
         self.audio_fs = int(audio_fs)
@@ -141,16 +124,13 @@ class ConditionNMEDTDataset(Dataset):
         self._chunk_cache_arrays: dict[str, np.ndarray] = {}
         self._chunk_cache_manifest = self._load_eeg_chunk_cache_manifest(eeg_chunk_cache_dir)
 
-        self.instrument_to_id = {inst: i for i, inst in enumerate(self.active_instruments)}
-
         song_specs = self._normalize_song_specs(
             songs=songs,
             mat_path=mat_path,
             audio_path=audio_path,
             data_key=data_key,
-            condition_sources=condition_sources,
         )
-        required_sources = self._required_source_names()
+        required_sources = ["passive"]
         self.song_records = self._build_song_records(song_specs, required_sources=required_sources)
         first = self.song_records[0].sources[required_sources[0]]
         self.base_eeg_channels = first.n_channels
@@ -163,7 +143,7 @@ class ConditionNMEDTDataset(Dataset):
                     raise ValueError(f"Invalid subject index {s}; total_subjects={self.total_subjects}")
             self.subjects = list(subjects)
 
-        self.eeg_out_channels = self.base_eeg_channels * 3
+        self.eeg_out_channels = self.base_eeg_channels
 
         self.index_map: list[tuple[int, int, int]] = []
         for song_idx, record in enumerate(self.song_records):
@@ -195,23 +175,18 @@ class ConditionNMEDTDataset(Dataset):
         mat_path: str | None,
         audio_path: str | None,
         data_key: str,
-        condition_sources: dict[str, dict[str, str]] | None,
     ) -> list[dict[str, Any]]:
         if songs:
             normalized = []
             for idx, song in enumerate(songs):
                 if "audio_path" not in song:
                     raise KeyError(f"data.songs[{idx}] is missing 'audio_path'")
-                per_song_condition_sources = song.get("condition_sources")
-                if per_song_condition_sources is None and "mat_path" not in song:
-                    per_song_condition_sources = condition_sources
                 normalized.append(
                     {
                         "name": str(song.get("name", f"song_{idx:02d}")),
                         "mat_path": song.get("mat_path", mat_path),
                         "audio_path": song["audio_path"],
                         "data_key": song.get("data_key", data_key),
-                        "condition_sources": per_song_condition_sources,
                     }
                 )
             return normalized
@@ -224,7 +199,6 @@ class ConditionNMEDTDataset(Dataset):
                 "mat_path": mat_path,
                 "audio_path": audio_path,
                 "data_key": data_key,
-                "condition_sources": condition_sources,
             }
         ]
 
@@ -272,39 +246,29 @@ class ConditionNMEDTDataset(Dataset):
             if mat_path is None:
                 raise ValueError(f"Song spec {spec.get('name', idx)!r} is missing mat_path.")
 
-            source_specs = dict(spec.get("condition_sources") or {})
-            if "passive" not in source_specs:
-                source_specs["passive"] = {"mat_path": mat_path, "data_key": data_key}
-            for inst in self.active_instruments:
-                if inst not in source_specs:
-                    source_specs[inst] = {"mat_path": mat_path, "data_key": data_key}
-
             sources: dict[str, EEGSource] = {}
-            for name, source_spec in source_specs.items():
-                p = source_spec.get("mat_path", mat_path)
-                k = source_spec.get("data_key", data_key)
-                key = (str(p), str(k))
-                chunk_cache_entry = self._get_chunk_cache_entry(str(spec.get("name", f"song_{idx:02d}")), name)
-                if key not in global_shape_cache:
-                    global_shape_cache[key] = _get_mat_shape(
-                        mat_path=str(p),
-                        data_key=str(k),
-                    )
-                sources[name] = EEGSource(
-                    name=name,
-                    mat_path=str(p),
-                    data_key=str(k),
-                    shape=global_shape_cache[key],
-                    chunk_cache_path=None
-                    if chunk_cache_entry is None
-                    else str(Path(self._chunk_cache_manifest["_cache_dir"]) / chunk_cache_entry["path"]),
-                    chunk_cache_shape=None
-                    if chunk_cache_entry is None
-                    else tuple(int(v) for v in chunk_cache_entry["shape"]),
-                    chunk_cache_subject_indices=None
-                    if chunk_cache_entry is None
-                    else tuple(int(v) for v in chunk_cache_entry["subject_indices"]),
+            key = (str(mat_path), str(data_key))
+            chunk_cache_entry = self._get_chunk_cache_entry(str(spec.get("name", f"song_{idx:02d}")), "passive")
+            if key not in global_shape_cache:
+                global_shape_cache[key] = _get_mat_shape(
+                    mat_path=str(mat_path),
+                    data_key=str(data_key),
                 )
+            sources["passive"] = EEGSource(
+                name="passive",
+                mat_path=str(mat_path),
+                data_key=str(data_key),
+                shape=global_shape_cache[key],
+                chunk_cache_path=None
+                if chunk_cache_entry is None
+                else str(Path(self._chunk_cache_manifest["_cache_dir"]) / chunk_cache_entry["path"]),
+                chunk_cache_shape=None
+                if chunk_cache_entry is None
+                else tuple(int(v) for v in chunk_cache_entry["shape"]),
+                chunk_cache_subject_indices=None
+                if chunk_cache_entry is None
+                else tuple(int(v) for v in chunk_cache_entry["subject_indices"]),
+            )
 
             first = sources[required_sources[0]]
             for name in required_sources[1:]:
@@ -451,17 +415,6 @@ class ConditionNMEDTDataset(Dataset):
         self.latents_by_song = self.z0_by_song
         self.latent_shape = tuple(int(v) for v in self.z0_by_chunk.shape[1:])
 
-    def _required_source_names(self) -> list[str]:
-        if self.condition_type == "multi_attention":
-            if len(self.active_instruments) < 3:
-                raise ValueError("multi_attention requires at least 3 active instruments.")
-            return self.active_instruments[:3]
-        if self.condition_type == "single_repeated":
-            return [self.target_instrument]  # repeated x3
-        if self.condition_type == "passive_x3":
-            return ["passive"]
-        raise RuntimeError("unreachable")
-
     def __len__(self) -> int:
         return len(self.index_map)
 
@@ -517,28 +470,14 @@ class ConditionNMEDTDataset(Dataset):
         src_arr = self._get_source_array(src)
         return src_arr[:, st:ed, subj_idx].copy()
 
-    def _build_eeg(self, song_idx: int, subj_idx: int, chunk_idx: int) -> tuple[np.ndarray, int, int, bool]:
-        if self.condition_type == "multi_attention":
-            parts = [self._slice_eeg(song_idx, inst, subj_idx, chunk_idx) for inst in self.active_instruments[:3]]
-            eeg = np.concatenate(parts, axis=0)
-            return eeg, -1, -1, False
-
-        if self.condition_type == "single_repeated":
-            eeg_one = self._slice_eeg(song_idx, self.target_instrument, subj_idx, chunk_idx)
-            eeg = np.concatenate([eeg_one, eeg_one, eeg_one], axis=0)
-            return eeg, self.instrument_to_id[self.target_instrument], 0, False
-
-        if self.condition_type == "passive_x3":
-            eeg_one = self._slice_eeg(song_idx, "passive", subj_idx, chunk_idx)
-            eeg = np.concatenate([eeg_one, eeg_one, eeg_one], axis=0)
-            return eeg, -1, -1, True
-
-        raise RuntimeError("unreachable")
+    def _build_eeg(self, song_idx: int, subj_idx: int, chunk_idx: int) -> tuple[np.ndarray, bool]:
+        eeg_one = self._slice_eeg(song_idx, "passive", subj_idx, chunk_idx)
+        return eeg_one, True
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         song_idx, subj_idx, chunk_idx = self.index_map[idx]
         song = self.song_records[song_idx]
-        eeg, instrument_id, trial_id, is_passive = self._build_eeg(song_idx, subj_idx, chunk_idx)
+        eeg, is_passive = self._build_eeg(song_idx, subj_idx, chunk_idx)
 
         absolute_chunk_idx = song.chunk_offset + chunk_idx
         a_st = absolute_chunk_idx * self.audio_chunk_len
@@ -550,7 +489,7 @@ class ConditionNMEDTDataset(Dataset):
             audio = audio / max_abs
 
         sample = {
-            "eeg": torch.tensor(eeg, dtype=torch.float32),                 # [3C, T]
+            "eeg": torch.tensor(eeg, dtype=torch.float32),                 # [C, T]
             "audio": torch.tensor(audio, dtype=torch.float32),             # [L]
             "subject_idx": torch.tensor(subj_idx, dtype=torch.long),
             "chunk_idx": torch.tensor(chunk_idx, dtype=torch.long),
@@ -558,8 +497,6 @@ class ConditionNMEDTDataset(Dataset):
             "song_name": song.name,
             "condition_type": self.condition_type,
             "condition_id": torch.tensor(self.CONDITION_TO_ID[self.condition_type], dtype=torch.long),
-            "instrument_id": torch.tensor(instrument_id, dtype=torch.long),
-            "trial_id": torch.tensor(trial_id, dtype=torch.long),
             "is_passive": torch.tensor(bool(is_passive)),
             "text": self.text_prompt,
         }

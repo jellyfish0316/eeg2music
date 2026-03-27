@@ -1,8 +1,7 @@
 seed: 42
 
 experiment:
-  active_instruments: [drum, guitar, vocal]
-  conditions: [passive_x3]
+  conditions: [passive]
   seed: 42
   num_folds: 10
   fold_index: 0
@@ -16,19 +15,6 @@ data:
       mat_path: data/EEG_processed/song21_Processed.mat
       audio_path: data/songs/song21_16k.wav
       data_key: data21
-#     condition_sources:
-#       passive:
-#         mat_path: data/EEG/song21_Imputed.mat
-#         data_key: data21
-#       drum:
-#         mat_path: data/EEG/song21_Imputed.mat
-#         data_key: data21
-#       guitar:
-#         mat_path: data/EEG/song21_Imputed.mat
-#         data_key: data21
-#       vocal:
-#         mat_path: data/EEG/song21_Imputed.mat
-#         data_key: data21
     - name: song22
       mat_path: data/EEG_processed/song22_Processed.mat
       audio_path: data/songs/song22_16k.wav
@@ -92,7 +78,7 @@ audio_encoder:
   model_id: cvssp/audioldm2-music
   sample_rate: 16000
   freeze_vae: true
-  use_mode: false
+  use_mode: true # true: deterministic, false: random latents
 
 controlnet:
   enabled: true

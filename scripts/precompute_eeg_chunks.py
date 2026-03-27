@@ -46,40 +46,9 @@ def load_song_specs(
                 "mat_path": str(song["mat_path"]),
                 "audio_path": str(song["audio_path"]),
                 "data_key": str(song["data_key"]),
-                "condition_sources": song.get("condition_sources"),
             }
         )
     return normalized
-
-
-def resolve_required_sources(
-    *,
-    conditions: list[str],
-    active_instruments: list[str],
-    target_instrument: str | None = None,
-) -> list[str]:
-    required: list[str] = []
-
-    def add(name: str) -> None:
-        if name not in required:
-            required.append(name)
-
-    for condition in conditions:
-        if condition == "passive_x3":
-            add("passive")
-        elif condition == "multi_attention":
-            if len(active_instruments) < 3:
-                raise ValueError("multi_attention requires at least 3 active instruments.")
-            for inst in active_instruments[:3]:
-                add(inst)
-        elif condition == "single_repeated":
-            if target_instrument is None:
-                raise ValueError("single_repeated requires experiment.target_instrument.")
-            add(target_instrument)
-        else:
-            raise ValueError(f"Unsupported condition type for EEG chunk cache: {condition}")
-
-    return required
 
 
 def load_eeg_array(
@@ -102,17 +71,10 @@ def main() -> None:
     set_seed(cfg["seed"])
 
     data_cfg = cfg["data"]
-    experiment_cfg = cfg.get("experiment", {})
     out_dir = Path(data_cfg.get("eeg_chunk_cache_dir", "data/precomputed/eeg_chunks"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    active_instruments = list(experiment_cfg.get("active_instruments", ["drum", "guitar", "vocal"]))
-    conditions = list(experiment_cfg.get("conditions", ["passive_x3"]))
-    required_sources = resolve_required_sources(
-        conditions=conditions,
-        active_instruments=active_instruments,
-        target_instrument=experiment_cfg.get("target_instrument"),
-    )
+    required_sources = ["passive"]
     chunk_sec = float(data_cfg["chunk_sec"])
     eeg_fs = int(data_cfg["eeg_fs"])
     audio_fs = int(data_cfg["audio_fs"])
@@ -140,13 +102,6 @@ def main() -> None:
         if mat_path is None or audio_path is None:
             raise ValueError(f"Song {song_name!r} missing mat_path/audio_path.")
 
-        source_specs = dict(spec.get("condition_sources") or {})
-        if "passive" not in source_specs:
-            source_specs["passive"] = {"mat_path": mat_path, "data_key": data_key}
-        for inst in active_instruments:
-            if inst not in source_specs:
-                source_specs[inst] = {"mat_path": mat_path, "data_key": data_key}
-
         audio, sr = sf.read(str(audio_path))
         if audio.ndim == 2:
             audio = audio.mean(axis=1)
@@ -159,13 +114,10 @@ def main() -> None:
         print(f"precompute EEG chunks: song={song_name} n_chunks_audio={n_chunks_audio}", flush=True)
 
         for source_name in required_sources:
-            source_spec = source_specs[source_name]
-            src_mat_path = str(source_spec.get("mat_path", mat_path))
-            src_data_key = str(source_spec.get("data_key", data_key))
             eeg = load_eeg_array(
                 source_name=source_name,
-                mat_path=src_mat_path,
-                data_key=src_data_key,
+                mat_path=str(mat_path),
+                data_key=str(data_key),
             )
             subject_indices = list(range(int(eeg.shape[2])))
             n_chunks_eeg = int(eeg.shape[1] // eeg_chunk_len)
@@ -199,8 +151,8 @@ def main() -> None:
                 "path": os.path.relpath(out_path, out_dir),
                 "shape": [len(subject_indices), total_chunks, int(eeg.shape[0]), eeg_chunk_len],
                 "subject_indices": subject_indices,
-                "mat_path": src_mat_path,
-                "data_key": src_data_key,
+                "mat_path": str(mat_path),
+                "data_key": str(data_key),
             }
 
     manifest_path = out_dir / "manifest.json"

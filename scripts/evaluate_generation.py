@@ -93,30 +93,7 @@ def main() -> None:
     }
 
     pairwise = []
-    for key, values in sorted(by_pair_key.items()):
-        if "multi_attention" in values and "passive_x3" in values:
-            pairwise.append(
-                {
-                    "fold_index": key[0],
-                    "song_idx": key[1],
-                    "subject_idx": key[2],
-                    "chunk_idx": key[3],
-                    "multi_attention": float(values["multi_attention"]),
-                    "passive_x3": float(values["passive_x3"]),
-                    "delta_multi_minus_passive": float(values["multi_attention"] - values["passive_x3"]),
-                }
-            )
-
     pairwise_summary = {}
-    if len(pairwise) > 0:
-        deltas = [row["delta_multi_minus_passive"] for row in pairwise]
-        pairwise_summary = {
-            "count": len(deltas),
-            "mean_delta_multi_minus_passive": float(sum(deltas) / len(deltas)),
-            "num_multi_better": int(sum(1 for x in deltas if x > 0)),
-            "num_passive_better": int(sum(1 for x in deltas if x < 0)),
-            "num_ties": int(sum(1 for x in deltas if x == 0)),
-        }
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

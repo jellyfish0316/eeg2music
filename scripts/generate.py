@@ -48,8 +48,7 @@ def resolve_fold_split(cfg: dict, fold_index: int) -> dict:
     split_cfg = cfg.get("split", {})
     ds_probe, _ = build_dataloader(
         cfg,
-        condition_type="passive_x3",
-        target_instrument=None,
+        condition_type="passive",
         subjects=None,
         shuffle=False,
     )
@@ -91,7 +90,6 @@ def main() -> None:
     dataset, loader = build_dataloader(
         cfg,
         condition_type=job["condition_type"],
-        target_instrument=job["target_instrument"] or None,
         subjects=fold_meta[subject_key],
         shuffle=False,
         chunk_split_name=args.split,
