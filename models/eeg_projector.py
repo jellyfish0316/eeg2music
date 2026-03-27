@@ -10,7 +10,7 @@ class EEGProjector(nn.Module):
         in_channels: int,
         conv_channels: list[int] | tuple[int, ...] = (256, 512, 1024, 2048),
         strides: list[int] | tuple[int, ...] = (5, 2, 2, 2),
-        latent_grid: tuple[int, int, int] = (8, 16, 87),
+        latent_grid: tuple[int, int, int] = (8, 87, 16),
         kernel_sizes: list[int] | tuple[int, ...] = (7, 5, 5, 5),
     ) -> None:
         super().__init__()
@@ -19,9 +19,9 @@ class EEGProjector(nn.Module):
         if len(kernel_sizes) != len(conv_channels):
             raise ValueError("kernel_sizes and conv_channels must have the same length.")
 
-        self.latent_channels, self.latent_height, self.latent_width = [int(v) for v in latent_grid]
-        self.target_length = self.latent_width
-        self.projected_channels = self.latent_channels * self.latent_height
+        self.latent_channels, self.latent_time, self.latent_freq = [int(v) for v in latent_grid]
+        self.target_length = self.latent_time
+        self.projected_channels = self.latent_channels * self.latent_freq
 
         prev_channels = int(in_channels)
         layers: list[nn.Module] = []
@@ -53,22 +53,23 @@ class EEGProjector(nn.Module):
 
     @property
     def latent_grid(self) -> tuple[int, int, int]:
-        return (self.latent_channels, self.latent_height, self.latent_width)
+        return (self.latent_channels, self.latent_time, self.latent_freq)
 
     def forward(self, eeg: torch.Tensor) -> torch.Tensor:
         x = self.temporal_conv(eeg)
         x = self.channel_proj(x)
         batch_size, channels, length = x.shape
         # Paper specifies strides/channels but not padding details. With the
-        # current same-padded Conv1d stack, a 3.5s/1kHz chunk yields width 88
-        # for the AudioLDM2 latent grid whose width is 87. When that happens,
+        # current same-padded Conv1d stack, a 3.5s/1kHz chunk yields length 88
+        # for the AudioLDM2 latent time axis whose length is 87. When that happens,
         # trim the extra step and keep the pure conv->reshape path.
         if length == self.target_length + 1:
             x = x[..., : self.target_length]
             length = self.target_length
 
         if channels == self.projected_channels and length == self.target_length:
-            return x.view(batch_size, self.latent_channels, self.latent_height, self.latent_width)
+            x = x.view(batch_size, self.latent_channels, self.latent_freq, self.latent_time)
+            return x.transpose(-1, -2).contiguous()
 
         raise RuntimeError(
             "Projector output does not match checkpoint-derived latent grid "

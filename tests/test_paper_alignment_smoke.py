@@ -304,7 +304,7 @@ def build_test_model(
         device="cpu",
         enable_audio_encoder=False,
         latent_channels=8,
-        latent_grid=(8, 16, 87),
+        latent_grid=(8, 87, 16),
         projector_use_linear_fallback=True,
         audio_model_id="fake/audioldm2",
         text_prompt="Pop music",
@@ -399,14 +399,14 @@ def test_paper_aligned_forward_backward_smoke(monkeypatch: pytest.MonkeyPatch) -
     assert FakeAudioLDM2Pipeline.encode_prompt_calls == 1
 
     eeg = torch.randn(2, 12, 437)
-    z0 = torch.randn(2, 8, 16, 87)
+    z0 = torch.randn(2, 8, 87, 16)
     subject_idx = torch.tensor([0, 1], dtype=torch.long)
     timesteps = model.sample_timesteps(batch_size=2, device=torch.device("cpu"))
 
     out = model(eeg=eeg, subject_idx=subject_idx, z0=z0, timesteps=timesteps, use_control=True)
     assert FakeAudioLDM2Pipeline.encode_prompt_calls == 1
-    assert out["projected_latent"].shape == (2, 8, 16, 87)
-    assert out["eps_pred"].shape == (2, 8, 16, 87)
+    assert out["projected_latent"].shape == (2, 8, 87, 16)
+    assert out["eps_pred"].shape == (2, 8, 87, 16)
     assert torch.isfinite(out["loss"])
     assert out["control_residuals"] is not None
     conditioning = model.control_unet.get_text_conditioning(batch_size=2, device="cpu", dtype=torch.float32)
@@ -464,11 +464,11 @@ def test_derive_latent_grid_prefers_config_then_cache_then_checkpoint(monkeypatc
         "latent_cache": {"precompute_use_mode": True},
         "model": {"projector": {"lat_grid": [8, 12, 34]}},
     }
-    ds = DummyDataset(z0_by_chunk=torch.randn(4, 8, 16, 87))
+    ds = DummyDataset(z0_by_chunk=torch.randn(4, 8, 87, 16))
     assert derive_latent_grid(cfg, dataset=ds, device=torch.device("cpu")) == (8, 12, 34)
 
     cfg["model"]["projector"]["lat_grid"] = None
-    assert derive_latent_grid(cfg, dataset=ds, device=torch.device("cpu")) == (8, 16, 87)
+    assert derive_latent_grid(cfg, dataset=ds, device=torch.device("cpu")) == (8, 87, 16)
 
     ds.z0_by_chunk = None
 
@@ -487,19 +487,19 @@ def test_derive_latent_grid_prefers_config_then_cache_then_checkpoint(monkeypatc
 def test_projector_uses_linear_fallback_only_when_needed() -> None:
     projector = EEGProjector(
         in_channels=12,
-        latent_grid=(8, 16, 87),
+        latent_grid=(8, 87, 16),
         use_linear_fallback=True,
     )
     eeg = torch.randn(2, 12, 437)
     out = projector(eeg)
-    assert out.shape == (2, 8, 16, 87)
+    assert out.shape == (2, 8, 87, 16)
     assert projector.linear_fallback is not None
 
 
 def test_projector_raises_when_fallback_disabled_and_temporal_length_mismatches() -> None:
     projector = EEGProjector(
         in_channels=12,
-        latent_grid=(8, 16, 87),
+        latent_grid=(8, 87, 16),
         use_linear_fallback=False,
     )
     eeg = torch.randn(2, 12, 437)

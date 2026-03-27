@@ -15,7 +15,7 @@ import scripts.train as train_module
 class DummyDataset:
     eeg_out_channels = 12
     total_subjects = 5
-    z0_by_chunk = torch.randn(4, 8, 16, 87)
+    z0_by_chunk = torch.randn(4, 8, 87, 16)
 
     def __len__(self) -> int:
         return 2
@@ -60,8 +60,7 @@ def make_cfg(*, epochs: int = 1, validation_metric: str = "clap") -> dict:
     return {
         "seed": 42,
         "experiment": {
-            "active_instruments": ["drum", "guitar", "vocal"],
-            "conditions": ["multi_attention", "passive_x3"],
+            "conditions": ["passive"],
         },
         "data": {
             "audio_fs": 16000,
@@ -70,7 +69,7 @@ def make_cfg(*, epochs: int = 1, validation_metric: str = "clap") -> dict:
             "batch_size": 2,
         },
         "model": {
-            "projector": {"channels": [256, 512, 1024, 2048], "strides": [5, 2, 2, 2], "use_linear_fallback": True},
+            "projector": {"channels": [256, 512, 1024, 2048], "strides": [5, 2, 2, 2]},
             "unet": {"cache_pipeline": True, "text_cache_path": None},
             "use_subject_adapter": True,
             "subject_emb_dim": 64,
@@ -112,8 +111,8 @@ def install_fake_training_stack(monkeypatch: pytest.MonkeyPatch) -> None:
         }
     ]
 
-    def fake_build_dataloader(cfg, *, condition_type, target_instrument, subjects, shuffle):
-        del cfg, condition_type, target_instrument, subjects, shuffle
+    def fake_build_dataloader(cfg, *, subjects, shuffle, chunk_split_name="train"):
+        del cfg, subjects, shuffle, chunk_split_name
         return DummyDataset(), batches
 
     monkeypatch.setattr(train_module, "build_dataloader", fake_build_dataloader)
@@ -132,8 +131,7 @@ def test_run_one_condition_clap_validation_writes_best_checkpoint(
 
     result = train_module.run_one_condition(
         make_cfg(),
-        fold_meta={"fold_index": 0, "train_subjects": [1], "val_subjects": [2], "test_subjects": [3]},
-        condition_job={"condition_name": "multi_attention", "condition_type": "multi_attention", "target_instrument": ""},
+        split_meta={"train_subjects": [1], "val_subjects": [2], "test_subjects": [3]},
         device=torch.device("cpu"),
         output_dir=tmp_path,
         max_steps=1,
@@ -161,8 +159,7 @@ def test_run_one_condition_prefers_higher_clap_over_lower_val_loss(
 
     result = train_module.run_one_condition(
         make_cfg(epochs=2),
-        fold_meta={"fold_index": 0, "train_subjects": [1], "val_subjects": [2], "test_subjects": [3]},
-        condition_job={"condition_name": "passive_x3", "condition_type": "passive_x3", "target_instrument": ""},
+        split_meta={"train_subjects": [1], "val_subjects": [2], "test_subjects": [3]},
         device=torch.device("cpu"),
         output_dir=tmp_path,
         max_steps=1,
@@ -190,8 +187,7 @@ def test_run_one_condition_clap_validation_requires_helper(
     with pytest.raises(RuntimeError, match="CLAP unavailable"):
         train_module.run_one_condition(
             make_cfg(),
-            fold_meta={"fold_index": 0, "train_subjects": [1], "val_subjects": [2], "test_subjects": [3]},
-            condition_job={"condition_name": "multi_attention", "condition_type": "multi_attention", "target_instrument": ""},
+            split_meta={"train_subjects": [1], "val_subjects": [2], "test_subjects": [3]},
             device=torch.device("cpu"),
             output_dir=tmp_path,
             max_steps=1,

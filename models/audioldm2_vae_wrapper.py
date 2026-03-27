@@ -34,6 +34,8 @@ class AudioLDM2VAEWrapper(nn.Module):
     Notes
     -----
     - AudioLDM2's VAE encodes mel-spectrograms, not raw waveform directly.
+    - This repo stores mel/latent tensors in the official diffusers layout:
+      mel [B, 1, T, F], latents [B, C, T/4, F/4].
     - Returned latents are scaled by vae.config.scaling_factor so they can be
       used directly in a latent diffusion training pipeline.
     """
@@ -117,7 +119,7 @@ class AudioLDM2VAEWrapper(nn.Module):
     def waveform_to_mel(self, waveform: torch.Tensor) -> torch.Tensor:
         """
         waveform: [B, T] or [B, 1, T]
-        returns: [B, 1, n_mels, n_frames]
+        returns: [B, 1, n_frames, n_mels]
         """
         if waveform.dim() == 3:
             if waveform.size(1) != 1:
@@ -137,6 +139,7 @@ class AudioLDM2VAEWrapper(nn.Module):
 
         waveform = torch.stack(processed, dim=0).to(device=self.device, dtype=torch.float32)
         mel_log, _, _, _ = self.tacotron_stft.mel_spectrogram(waveform, normalize_fun=torch.log)
+        mel_log = mel_log.transpose(-1, -2).contiguous()
         return mel_log.unsqueeze(1).to(dtype=self.dtype)
 
     def _load_full_pipeline(self):
@@ -169,7 +172,7 @@ class AudioLDM2VAEWrapper(nn.Module):
         return_stats: bool = False,
     ) -> AudioLDM2LatentOutput:
         """
-        mel: [B, 1, n_mels, n_frames]
+        mel: [B, 1, n_frames, n_mels]
         """
         mel = mel.to(device=self.device, dtype=self.dtype)
 
@@ -195,10 +198,7 @@ class AudioLDM2VAEWrapper(nn.Module):
     @torch.no_grad()
     def decode_latents_to_mel(self, latents: torch.Tensor) -> torch.Tensor:
         latents = latents.to(device=self.device, dtype=self.dtype)
-        # The training path uses checkpoint-derived latent grids in [C, H, W] = [C, 16, 87].
-        # AudioLDM2's official decode path expects the spatial axes swapped back before vocoding.
-        latents_for_decode = latents.transpose(-1, -2)
-        decoded = self.vae.decode(latents_for_decode / self.scaling_factor)
+        decoded = self.vae.decode(latents / self.scaling_factor)
         mel = decoded.sample if hasattr(decoded, "sample") else decoded
         if mel.dim() != 4:
             raise RuntimeError(f"Expected decoded mel [B,1,T,F], got {tuple(mel.shape)}")

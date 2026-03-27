@@ -28,10 +28,8 @@ def _prepare_official_latents(
     if pipe is None or not hasattr(pipe, "prepare_latents"):
         raise RuntimeError("The pretrained U-Net wrapper must keep a live pipeline with prepare_latents for generation.")
 
-    # Official AudioLDM2 prepare_latents expects latents laid out as [B, C, T/4, F/4].
-    # Our training cache stores latents in [B, C, F/4, T/4], so we transpose back after
-    # sampling to stay consistent with the trained ControlNet/projector path.
-    official_height = int(model.latent_grid[2]) * int(pipe.vae_scale_factor)
+    # Keep official AudioLDM2 latent layout [B, C, T/4, F/4] throughout the repo.
+    official_height = int(model.latent_grid[1]) * int(pipe.vae_scale_factor)
     latents = pipe.prepare_latents(
         batch_size,
         int(model.latent_grid[0]),
@@ -40,7 +38,7 @@ def _prepare_official_latents(
         device,
         generator,
     )
-    return latents.transpose(-1, -2).contiguous()
+    return latents
 
 
 @torch.no_grad()
@@ -62,7 +60,7 @@ def _generate_latents_official_backbone(
 
     scheduler.set_timesteps(int(num_inference_steps), device=device)
     do_classifier_free_guidance = float(guidance_scale) > 1.0
-    height = int(model.latent_grid[2]) * int(pipe.vae_scale_factor)
+    height = int(model.latent_grid[1]) * int(pipe.vae_scale_factor)
     latents = pipe.prepare_latents(
         batch_size,
         int(model.latent_grid[0]),
@@ -105,8 +103,7 @@ def _generate_latents_official_backbone(
             noise_pred = noise_pred_uncond + float(guidance_scale) * (noise_pred_text - noise_pred_uncond)
         latents = scheduler.step(noise_pred, timestep, latents, **extra_step_kwargs).prev_sample
 
-    # Convert back to the training/checkpoint latent layout [B,C,F/4,T/4].
-    return latents.transpose(-1, -2).contiguous()
+    return latents
 
 
 @torch.no_grad()
