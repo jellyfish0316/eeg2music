@@ -129,7 +129,7 @@ train:
   device: cuda
   model_dtype: float32
   lr: 0.0001
-  epochs: 20
+  epochs: 100
   gradient_accumulation_steps: 3
   grad_clip: 1.0
   log_every: 10
