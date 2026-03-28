@@ -47,6 +47,17 @@ def snr_db(reference: np.ndarray, estimate: np.ndarray) -> float:
     return float(10.0 * np.log10(ref_power / noise_power))
 
 
+def aligned_abs_diff_stats(a: np.ndarray, b: np.ndarray) -> dict[str, float]:
+    length = min(a.shape[-1], b.shape[-1])
+    x = a[:length].astype(np.float64, copy=False)
+    y = b[:length].astype(np.float64, copy=False)
+    diff = np.abs(x - y)
+    return {
+        "mean_abs_diff": float(diff.mean()),
+        "max_abs_diff": float(diff.max()),
+    }
+
+
 def mel_from_wrapper(wrapper: AudioLDM2VAEWrapper, audio: np.ndarray) -> torch.Tensor:
     waveform = torch.from_numpy(audio).unsqueeze(0)
     return wrapper.waveform_to_mel(waveform)
@@ -116,7 +127,10 @@ def main() -> None:
         vocoder_audio = waveform_vocoder[0].detach().cpu().float().numpy()
 
         latents = wrapper.encode_mel(mel, sample_posterior=False).latents
+        decoded_mel = wrapper.decode_latents_to_mel(latents)
         vae_audio = wrapper.decode_latents_to_waveform(latents)[0].detach().cpu().float().numpy()
+
+        mel_abs_diff = (decoded_mel.float().cpu() - mel.float().cpu()).abs()
 
         vocoder_path = out_dir / f"{name}_mel_to_vocoder.wav"
         vae_path = out_dir / f"{name}_vae_roundtrip.wav"
@@ -127,6 +141,11 @@ def main() -> None:
             "mel_shape": list(mel.shape),
             "vocoder_snr_db": snr_db(audio, vocoder_audio),
             "vae_roundtrip_snr_db": snr_db(audio, vae_audio),
+            "vocoder_vs_vae_waveform": aligned_abs_diff_stats(vocoder_audio, vae_audio),
+            "mel_vs_decoded_mel": {
+                "mean_abs_diff": float(mel_abs_diff.mean().item()),
+                "max_abs_diff": float(mel_abs_diff.max().item()),
+            },
             "vocoder_wav": str(vocoder_path),
             "vae_roundtrip_wav": str(vae_path),
         }
