@@ -55,8 +55,8 @@ data:
   chunk_sec: 3.5
   eeg_fs: 1000
   audio_fs: 16000
-  batch_size: 4
-  num_workers: 2
+  batch_size: 8
+  num_workers: 4
   text_prompt: "Pop music"
   eeg_chunk_cache_dir: data/precomputed/eeg_chunks_1khz
 
