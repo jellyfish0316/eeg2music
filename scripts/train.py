@@ -160,6 +160,7 @@ def build_dataloader(
         precomputed_latents_path=latent_cfg.get("path") if use_precomputed_latents else None,
         chunk_range=chunk_range,
         eeg_chunk_cache_dir=data_cfg.get("eeg_chunk_cache_dir"),
+        condition_sources=data_cfg.get("condition_sources"),
     )
     loader = DataLoader(
         dataset,

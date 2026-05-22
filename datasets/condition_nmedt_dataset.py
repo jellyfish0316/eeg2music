@@ -98,6 +98,7 @@ class ConditionNMEDTDataset(Dataset):
         precomputed_latents_path: str | None = None,
         chunk_range: tuple[float, float] | None = None,
         eeg_chunk_cache_dir: str | None = None,
+        condition_sources: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.chunk_sec = float(chunk_sec)
@@ -111,9 +112,10 @@ class ConditionNMEDTDataset(Dataset):
         self.chunk_range = self._normalize_chunk_range(chunk_range)
         self._source_cache: dict[tuple[str, str], np.ndarray] = {}
         self._source_cache_order: list[tuple[str, str]] = []
-        self._max_cached_sources = 1
         self._chunk_cache_arrays: dict[str, np.ndarray] = {}
         self._chunk_cache_manifest = self._load_eeg_chunk_cache_manifest(eeg_chunk_cache_dir)
+        self.condition_sources = self._normalize_condition_sources(condition_sources)
+        self._max_cached_sources = max(1, len(set(self.condition_sources)))
 
         song_specs = self._normalize_song_specs(
             songs=songs,
@@ -121,7 +123,7 @@ class ConditionNMEDTDataset(Dataset):
             audio_path=audio_path,
             data_key=data_key,
         )
-        required_sources = ["passive"]
+        required_sources = list(dict.fromkeys(self.condition_sources))
         self.song_records = self._build_song_records(song_specs, required_sources=required_sources)
         first = self.song_records[0].sources[required_sources[0]]
         self.base_eeg_channels = first.n_channels
@@ -134,7 +136,7 @@ class ConditionNMEDTDataset(Dataset):
                     raise ValueError(f"Invalid subject index {s}; total_subjects={self.total_subjects}")
             self.subjects = list(subjects)
 
-        self.eeg_out_channels = self.base_eeg_channels
+        self.eeg_out_channels = self.base_eeg_channels * len(self.condition_sources)
 
         self.index_map: list[tuple[int, int, int]] = []
         for song_idx, record in enumerate(self.song_records):
@@ -160,6 +162,15 @@ class ConditionNMEDTDataset(Dataset):
         return (start, end)
 
     @staticmethod
+    def _normalize_condition_sources(condition_sources: list[str] | None) -> list[str]:
+        if condition_sources is None:
+            return ["passive"]
+        normalized = [str(name) for name in condition_sources]
+        if not normalized:
+            raise ValueError("condition_sources cannot be empty.")
+        return normalized
+
+    @staticmethod
     def _normalize_song_specs(
         *,
         songs: list[dict[str, Any]] | None,
@@ -178,6 +189,7 @@ class ConditionNMEDTDataset(Dataset):
                         "mat_path": song.get("mat_path", mat_path),
                         "audio_path": song["audio_path"],
                         "data_key": song.get("data_key", data_key),
+                        "sources": song.get("sources"),
                     }
                 )
             return normalized
@@ -190,6 +202,7 @@ class ConditionNMEDTDataset(Dataset):
                 "mat_path": mat_path,
                 "audio_path": audio_path,
                 "data_key": data_key,
+                "sources": None,
             }
         ]
 
@@ -234,32 +247,53 @@ class ConditionNMEDTDataset(Dataset):
             mat_path = spec.get("mat_path")
             audio_path = spec.get("audio_path")
             data_key = spec.get("data_key", "data21")
-            if mat_path is None:
-                raise ValueError(f"Song spec {spec.get('name', idx)!r} is missing mat_path.")
+            source_specs = spec.get("sources")
 
             sources: dict[str, EEGSource] = {}
-            key = (str(mat_path), str(data_key))
-            chunk_cache_entry = self._get_chunk_cache_entry(str(spec.get("name", f"song_{idx:02d}")), "passive")
-            if key not in global_shape_cache:
-                global_shape_cache[key] = _get_mat_shape(
-                    mat_path=str(mat_path),
-                    data_key=str(data_key),
+            for source_name in required_sources:
+                source_mat_path = mat_path
+                source_data_key = data_key
+                if isinstance(source_specs, dict):
+                    source_spec = source_specs.get(source_name)
+                    if source_spec is None:
+                        raise KeyError(
+                            f"Song spec {spec.get('name', idx)!r} is missing source {source_name!r}. "
+                            f"available={list(source_specs)}"
+                        )
+                    if isinstance(source_spec, str):
+                        source_mat_path = source_spec
+                    elif isinstance(source_spec, dict):
+                        source_mat_path = source_spec.get("mat_path", mat_path)
+                        source_data_key = source_spec.get("data_key", data_key)
+                    else:
+                        raise TypeError(
+                            f"Song spec {spec.get('name', idx)!r} source {source_name!r} must be a path or mapping."
+                        )
+                if source_mat_path is None:
+                    raise ValueError(f"Song spec {spec.get('name', idx)!r} source {source_name!r} is missing mat_path.")
+
+                key = (str(source_mat_path), str(source_data_key))
+                chunk_cache_entry = self._get_chunk_cache_entry(str(spec.get("name", f"song_{idx:02d}")), source_name)
+                if key not in global_shape_cache:
+                    global_shape_cache[key] = _get_mat_shape(
+                        mat_path=str(source_mat_path),
+                        data_key=str(source_data_key),
+                    )
+                sources[source_name] = EEGSource(
+                    name=source_name,
+                    mat_path=str(source_mat_path),
+                    data_key=str(source_data_key),
+                    shape=global_shape_cache[key],
+                    chunk_cache_path=None
+                    if chunk_cache_entry is None
+                    else str(Path(self._chunk_cache_manifest["_cache_dir"]) / chunk_cache_entry["path"]),
+                    chunk_cache_shape=None
+                    if chunk_cache_entry is None
+                    else tuple(int(v) for v in chunk_cache_entry["shape"]),
+                    chunk_cache_subject_indices=None
+                    if chunk_cache_entry is None
+                    else tuple(int(v) for v in chunk_cache_entry["subject_indices"]),
                 )
-            sources["passive"] = EEGSource(
-                name="passive",
-                mat_path=str(mat_path),
-                data_key=str(data_key),
-                shape=global_shape_cache[key],
-                chunk_cache_path=None
-                if chunk_cache_entry is None
-                else str(Path(self._chunk_cache_manifest["_cache_dir"]) / chunk_cache_entry["path"]),
-                chunk_cache_shape=None
-                if chunk_cache_entry is None
-                else tuple(int(v) for v in chunk_cache_entry["shape"]),
-                chunk_cache_subject_indices=None
-                if chunk_cache_entry is None
-                else tuple(int(v) for v in chunk_cache_entry["subject_indices"]),
-            )
 
             first = sources[required_sources[0]]
             for name in required_sources[1:]:
@@ -462,8 +496,8 @@ class ConditionNMEDTDataset(Dataset):
         return src_arr[:, st:ed, subj_idx].copy()
 
     def _build_eeg(self, song_idx: int, subj_idx: int, chunk_idx: int) -> tuple[np.ndarray, bool]:
-        eeg_one = self._slice_eeg(song_idx, "passive", subj_idx, chunk_idx)
-        return eeg_one, True
+        chunks = [self._slice_eeg(song_idx, source_name, subj_idx, chunk_idx) for source_name in self.condition_sources]
+        return np.concatenate(chunks, axis=0), all(source_name == "passive" for source_name in self.condition_sources)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         song_idx, subj_idx, chunk_idx = self.index_map[idx]

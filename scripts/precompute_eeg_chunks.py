@@ -46,9 +46,34 @@ def load_song_specs(
                 "mat_path": str(song["mat_path"]),
                 "audio_path": str(song["audio_path"]),
                 "data_key": str(song["data_key"]),
+                "sources": song.get("sources"),
             }
         )
     return normalized
+
+
+def normalize_condition_sources(value: object | None) -> list[str]:
+    if value is None:
+        return ["passive"]
+    if not isinstance(value, list) or len(value) == 0:
+        raise ValueError("data.condition_sources must be a non-empty list when provided.")
+    return [str(name) for name in value]
+
+
+def resolve_source_spec(spec: dict, source_name: str) -> tuple[str, str]:
+    sources = spec.get("sources")
+    if isinstance(sources, dict):
+        source_spec = sources.get(source_name)
+        if source_spec is None:
+            raise KeyError(f"Song {spec['name']!r} is missing source {source_name!r}. available={list(sources)}")
+        if isinstance(source_spec, str):
+            return source_spec, str(spec["data_key"])
+        if isinstance(source_spec, dict):
+            return str(source_spec.get("mat_path", spec["mat_path"])), str(source_spec.get("data_key", spec["data_key"]))
+        raise TypeError(f"Song {spec['name']!r} source {source_name!r} must be a path or mapping.")
+    if source_name != "passive":
+        raise KeyError(f"Song {spec['name']!r} has no sources mapping for non-passive source {source_name!r}.")
+    return str(spec["mat_path"]), str(spec["data_key"])
 
 
 def load_eeg_array(
@@ -74,7 +99,7 @@ def main() -> None:
     out_dir = Path(data_cfg.get("eeg_chunk_cache_dir", "data/precomputed/eeg_chunks"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    required_sources = ["passive"]
+    required_sources = list(dict.fromkeys(normalize_condition_sources(data_cfg.get("condition_sources"))))
     chunk_sec = float(data_cfg["chunk_sec"])
     eeg_fs = int(data_cfg["eeg_fs"])
     audio_fs = int(data_cfg["audio_fs"])
@@ -114,10 +139,11 @@ def main() -> None:
         print(f"precompute EEG chunks: song={song_name} n_chunks_audio={n_chunks_audio}", flush=True)
 
         for source_name in required_sources:
+            source_mat_path, source_data_key = resolve_source_spec(spec, source_name)
             eeg = load_eeg_array(
                 source_name=source_name,
-                mat_path=str(mat_path),
-                data_key=str(data_key),
+                mat_path=source_mat_path,
+                data_key=source_data_key,
             )
             subject_indices = list(range(int(eeg.shape[2])))
             n_chunks_eeg = int(eeg.shape[1] // eeg_chunk_len)
@@ -151,8 +177,8 @@ def main() -> None:
                 "path": os.path.relpath(out_path, out_dir),
                 "shape": [len(subject_indices), total_chunks, int(eeg.shape[0]), eeg_chunk_len],
                 "subject_indices": subject_indices,
-                "mat_path": str(mat_path),
-                "data_key": str(data_key),
+                "mat_path": source_mat_path,
+                "data_key": source_data_key,
             }
 
     manifest_path = out_dir / "manifest.json"

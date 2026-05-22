@@ -128,7 +128,7 @@ Convert one or more already aligned song-level `.cdt` files into the repo-compat
 ```bash
 python scripts/prepare_cdt_eeg.py convert \
   data/cdt/song21_subject02.cdt data/cdt/song21_subject03.cdt \
-  --output data/SelfRocorded_EEG_Processed/song21_Processed.mat \
+  --output data/SelfRecorded_EEG_Processed/song21_Processed.mat \
   --song-name song21 \
   --dst-fs 1000 \
   --keep-eeg-channels 124 \
@@ -153,7 +153,7 @@ use trigger-based conversion instead. By default it cuts:
 ```bash
 python scripts/prepare_cdt_eeg.py convert-events \
   data/cdt/sub02_song7.cdt data/cdt/sub03_song7.cdt \
-  --output-dir data/SelfRocorded_EEG_Processed \
+  --output-dir data/SelfRecorded_EEG_Processed \
   --song-name song7 \
   --data-key data7 \
   --dst-fs 1000 \
@@ -161,7 +161,40 @@ python scripts/prepare_cdt_eeg.py convert-events \
   --trim-to-shortest
 ```
 
-The current training path uses only `passive`, so point `configs/train.yaml` at `data/SelfRocorded_EEG_Processed/song7_passive_Processed.mat` unless you re-enable multi-condition training.
+The current training path uses only `passive`, so point a self-recorded config at `data/SelfRecorded_EEG_Processed/song7_passive_Processed.mat` unless you re-enable multi-condition training.
+
+For multi-condition EEG conditioning, set `data.condition_sources`. The dataset concatenates these sources on the EEG channel axis before passing them to the model. For example, 124-channel EEG with three sources becomes 372 input channels.
+
+Self-recorded example using `guitar + vocal + drum`:
+
+```yaml
+data:
+  condition_sources: [guitar, vocal, drum]
+  songs:
+    - name: song7
+      mat_path: data/SelfRecorded_EEG_Processed/song7_passive_Processed.mat
+      audio_path: data/SelfRecorded_songs/wav_16k/song7.wav
+      data_key: data7
+      sources:
+        guitar:
+          mat_path: data/SelfRecorded_EEG_Processed/song7_guitar_Processed.mat
+          data_key: data7
+        vocal:
+          mat_path: data/SelfRecorded_EEG_Processed/song7_vocal_Processed.mat
+          data_key: data7
+        drum:
+          mat_path: data/SelfRecorded_EEG_Processed/song7_drum_Processed.mat
+          data_key: data7
+```
+
+Fallback using `passive * 3`:
+
+```yaml
+data:
+  condition_sources: [passive, passive, passive]
+```
+
+If you use `scripts/precompute_eeg_chunks.py`, re-run it after changing `condition_sources` or source paths so the EEG chunk manifest matches the config.
 
 ## Config Notes
 
