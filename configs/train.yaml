@@ -10,43 +10,43 @@ data:
 
   songs:
     - name: song21
-      mat_path: data/EEG_processed/song21_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song21_Processed.mat
       audio_path: data/songs/song21_16k.wav
       data_key: data21
     - name: song22
-      mat_path: data/EEG_processed/song22_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song22_Processed.mat
       audio_path: data/songs/song22_16k.wav
       data_key: data22
     - name: song23
-      mat_path: data/EEG_processed/song23_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song23_Processed.mat
       audio_path: data/songs/song23_16k.wav
       data_key: data23
     - name: song24
-      mat_path: data/EEG_processed/song24_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song24_Processed.mat
       audio_path: data/songs/song24_16k.wav
       data_key: data24
     - name: song25
-      mat_path: data/EEG_processed/song25_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song25_Processed.mat
       audio_path: data/songs/song25_16k.wav
       data_key: data25
     - name: song26
-      mat_path: data/EEG_processed/song26_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song26_Processed.mat
       audio_path: data/songs/song26_16k.wav
       data_key: data26
     - name: song27
-      mat_path: data/EEG_processed/song27_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song27_Processed.mat
       audio_path: data/songs/song27_16k.wav
       data_key: data27
     - name: song28
-      mat_path: data/EEG_processed/song28_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song28_Processed.mat
       audio_path: data/songs/song28_16k.wav
       data_key: data28
     - name: song29
-      mat_path: data/EEG_processed/song29_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song29_Processed.mat
       audio_path: data/songs/song29_16k.wav
       data_key: data29
     - name: song30
-      mat_path: data/EEG_processed/song30_Processed.mat
+      mat_path: data/NMEDT_EEG_processed/song30_Processed.mat
       audio_path: data/songs/song30_16k.wav
       data_key: data30
 

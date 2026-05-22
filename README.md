@@ -95,7 +95,7 @@ Then convert them to song-level processed mats:
 ```bash
 python scripts/prepare_nmedt_raw_eeg.py convert \
   --raw-dir data/EEG \
-  --output-dir data/EEG_processed \
+  --output-dir data/NMEDT_EEG_processed \
   --eeg-key eeg \
   --src-fs 1000 \
   --dst-fs 1000
@@ -106,6 +106,62 @@ Notes:
 - the current converter is trigger-based
 - fallback fixed-length song cutting was removed
 - EEG preprocessing is expected to happen here, not later in the dataset
+
+## CDT / Curry EEG Conversion
+
+The training dataset does not require MATLAB specifically. It requires one song-level EEG array per song with shape `[channels, time, subjects]`, saved in a `.mat` under a key like `data21`.
+
+For Curry / Neuroscan `.cdt` files, install MNE in the active environment:
+
+```bash
+pip install mne
+```
+
+Inspect a `.cdt` file:
+
+```bash
+python scripts/prepare_cdt_eeg.py inspect data/cdt/song21_subject02.cdt
+```
+
+Convert one or more already aligned song-level `.cdt` files into the repo-compatible `.mat` format:
+
+```bash
+python scripts/prepare_cdt_eeg.py convert \
+  data/cdt/song21_subject02.cdt data/cdt/song21_subject03.cdt \
+  --output data/SelfRocorded_EEG_Processed/song21_Processed.mat \
+  --song-name song21 \
+  --dst-fs 1000 \
+  --keep-eeg-channels 124 \
+  --trim-to-shortest
+```
+
+If your `.cdt` is a continuous recording, first use `inspect` to check annotations/triggers, then pass `--tmin` and `--duration` for the song segment you want to export. After conversion, point `configs/train.yaml` at the new `.mat` and keep `data_key` aligned with the song, for example `data21`.
+
+If your PsychoPy task writes condition triggers like this:
+
+- cue: `11` / `12` / `13` / `14`
+- music start: `21` / `22` / `23` / `24`
+- music end: `31` / `32` / `33` / `34`
+
+use trigger-based conversion instead. By default it cuts:
+
+- `drum`: `21 -> 31`
+- `vocal`: `22 -> 32`
+- `guitar`: `23 -> 33`
+- `passive`: `24 -> 34`
+
+```bash
+python scripts/prepare_cdt_eeg.py convert-events \
+  data/cdt/sub02_song7.cdt data/cdt/sub03_song7.cdt \
+  --output-dir data/SelfRocorded_EEG_Processed \
+  --song-name song7 \
+  --data-key data7 \
+  --dst-fs 1000 \
+  --keep-eeg-channels 124 \
+  --trim-to-shortest
+```
+
+The current training path uses only `passive`, so point `configs/train.yaml` at `data/SelfRocorded_EEG_Processed/song7_passive_Processed.mat` unless you re-enable multi-condition training.
 
 ## Config Notes
 
