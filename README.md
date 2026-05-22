@@ -242,7 +242,7 @@ Core dependencies:
 Run this whenever the audio latent layout or mel preprocessing changes:
 
 ```bash
-python scripts/precompute_audio_latents.py
+python scripts/precompute_audio_latents.py --config configs/train_self_recorded_multicond.yaml
 ```
 
 ### 2. EEG chunk cache
@@ -250,7 +250,7 @@ python scripts/precompute_audio_latents.py
 Run this when song-level EEG mats or chunk rules change:
 
 ```bash
-python scripts/precompute_eeg_chunks.py
+python scripts/precompute_eeg_chunks.py --config configs/train_self_recorded_multicond.yaml
 ```
 
 ## Training

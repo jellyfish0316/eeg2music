@@ -87,7 +87,7 @@ data:
   batch_size: 2
   num_workers: 0
   text_prompt: "Pop music"
-  eeg_chunk_cache_dir: null
+  eeg_chunk_cache_dir: data/precomputed/self_recorded_multicond_eeg_chunks_1khz
 
 model:
   use_subject_adapter: true
@@ -120,8 +120,8 @@ controlnet:
     - control_branch
 
 latent_cache:
-  enabled: false
-  path: null
+  enabled: true
+  path: data/precomputed/self_recorded_audio_latents.pt
   latent_channels: 8
   precompute_batch_size: 16
   precompute_use_mode: true

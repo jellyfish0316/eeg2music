@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -23,12 +24,18 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Precompute EEG chunks from a training config.")
+    parser.add_argument("--config", type=str, default="configs/train.yaml")
+    return parser.parse_args()
+
+
 def load_song_specs(
     *,
     songs: object,
 ) -> list[dict]:
     if not isinstance(songs, list) or len(songs) == 0:
-        raise ValueError("configs/train.yaml must define a non-empty data.songs list.")
+        raise ValueError("Config must define a non-empty data.songs list.")
 
     normalized = []
     for idx, song in enumerate(songs):
@@ -92,7 +99,8 @@ def load_eeg_array(
 
 
 def main() -> None:
-    cfg = load_config("configs/train.yaml")
+    args = parse_args()
+    cfg = load_config(args.config)
     set_seed(cfg["seed"])
 
     data_cfg = cfg["data"]

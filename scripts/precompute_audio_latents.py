@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 import sys
@@ -23,6 +24,12 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Precompute AudioLDM2 latents from a training config.")
+    parser.add_argument("--config", type=str, default="configs/train.yaml")
+    return parser.parse_args()
+
+
 def load_audio(
     *,
     audio_path: str,
@@ -39,7 +46,8 @@ def load_audio(
 
 @torch.no_grad()
 def main() -> None:
-    cfg = load_config("configs/train.yaml")
+    args = parse_args()
+    cfg = load_config(args.config)
     set_seed(cfg["seed"])
 
     data_cfg = cfg["data"]
