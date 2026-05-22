@@ -131,7 +131,6 @@ python scripts/prepare_cdt_eeg.py convert \
   --output data/SelfRecorded_EEG_Processed/song21_Processed.mat \
   --song-name song21 \
   --dst-fs 1000 \
-  --keep-eeg-channels 124 \
   --trim-to-shortest
 ```
 
@@ -157,13 +156,19 @@ python scripts/prepare_cdt_eeg.py convert-events \
   --song-name song7 \
   --data-key data7 \
   --dst-fs 1000 \
-  --keep-eeg-channels 124 \
   --trim-to-shortest
+```
+
+Put the expected channel count in the training config so loading fails early if the processed `.mat` has the wrong shape:
+
+```yaml
+data:
+  expected_eeg_channels: 128
 ```
 
 The current training path uses only `passive`, so point a self-recorded config at `data/SelfRecorded_EEG_Processed/song7_passive_Processed.mat` unless you re-enable multi-condition training.
 
-For multi-condition EEG conditioning, set `data.condition_sources`. The dataset concatenates these sources on the EEG channel axis before passing them to the model. For example, 124-channel EEG with three sources becomes 372 input channels.
+For multi-condition EEG conditioning, set `data.condition_sources`. The dataset concatenates these sources on the EEG channel axis before passing them to the model. For example, 128-channel self-recorded EEG with three sources becomes 384 input channels.
 
 Self-recorded example using `guitar + vocal + drum`:
 

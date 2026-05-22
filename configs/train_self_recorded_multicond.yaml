@@ -79,6 +79,7 @@ data:
 
   condition_sources: [guitar, vocal, drum]
   eeg_time: 3500
+  expected_eeg_channels: 128
   audio_samples: 56000
   chunk_sec: 3.5
   eeg_fs: 1000

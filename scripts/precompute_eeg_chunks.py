@@ -100,6 +100,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     required_sources = list(dict.fromkeys(normalize_condition_sources(data_cfg.get("condition_sources"))))
+    expected_eeg_channels = data_cfg.get("expected_eeg_channels")
+    expected_eeg_channels = None if expected_eeg_channels is None else int(expected_eeg_channels)
     chunk_sec = float(data_cfg["chunk_sec"])
     eeg_fs = int(data_cfg["eeg_fs"])
     audio_fs = int(data_cfg["audio_fs"])
@@ -145,6 +147,11 @@ def main() -> None:
                 mat_path=source_mat_path,
                 data_key=source_data_key,
             )
+            if expected_eeg_channels is not None and int(eeg.shape[0]) != expected_eeg_channels:
+                raise ValueError(
+                    f"{song_name} {source_name}: expected {expected_eeg_channels} EEG channels from config, "
+                    f"got {int(eeg.shape[0])} from {source_mat_path}."
+                )
             subject_indices = list(range(int(eeg.shape[2])))
             n_chunks_eeg = int(eeg.shape[1] // eeg_chunk_len)
             total_chunks = min(n_chunks_audio, n_chunks_eeg)

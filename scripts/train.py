@@ -161,6 +161,7 @@ def build_dataloader(
         chunk_range=chunk_range,
         eeg_chunk_cache_dir=data_cfg.get("eeg_chunk_cache_dir"),
         condition_sources=data_cfg.get("condition_sources"),
+        expected_eeg_channels=data_cfg.get("expected_eeg_channels"),
     )
     loader = DataLoader(
         dataset,

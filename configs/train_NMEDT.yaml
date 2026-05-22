@@ -51,6 +51,7 @@ data:
       data_key: data30
 
   eeg_time: 3500
+  expected_eeg_channels: 124
   audio_samples: 56000
   chunk_sec: 3.5
   eeg_fs: 1000

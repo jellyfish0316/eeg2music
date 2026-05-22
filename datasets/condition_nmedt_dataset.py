@@ -99,6 +99,7 @@ class ConditionNMEDTDataset(Dataset):
         chunk_range: tuple[float, float] | None = None,
         eeg_chunk_cache_dir: str | None = None,
         condition_sources: list[str] | None = None,
+        expected_eeg_channels: int | None = None,
     ) -> None:
         super().__init__()
         self.chunk_sec = float(chunk_sec)
@@ -116,6 +117,7 @@ class ConditionNMEDTDataset(Dataset):
         self._chunk_cache_manifest = self._load_eeg_chunk_cache_manifest(eeg_chunk_cache_dir)
         self.condition_sources = self._normalize_condition_sources(condition_sources)
         self._max_cached_sources = max(1, len(set(self.condition_sources)))
+        self.expected_eeg_channels = None if expected_eeg_channels is None else int(expected_eeg_channels)
 
         song_specs = self._normalize_song_specs(
             songs=songs,
@@ -127,6 +129,11 @@ class ConditionNMEDTDataset(Dataset):
         self.song_records = self._build_song_records(song_specs, required_sources=required_sources)
         first = self.song_records[0].sources[required_sources[0]]
         self.base_eeg_channels = first.n_channels
+        if self.expected_eeg_channels is not None and self.base_eeg_channels != self.expected_eeg_channels:
+            raise ValueError(
+                f"Expected {self.expected_eeg_channels} EEG channels from config, "
+                f"but loaded {self.base_eeg_channels} from {first.mat_path}."
+            )
         self.total_subjects = first.total_subjects
         if subjects is None:
             self.subjects = list(range(self.total_subjects))
