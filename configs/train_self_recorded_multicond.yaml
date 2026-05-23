@@ -135,11 +135,11 @@ split:
   subject_indices: [0, 1]
   val_ratio: 0.1
   song_splits:
-    train: [song3, song6, song7, song9]
-    val: [song3, song6, song7, song9]
-    test: [song3, song6, song7, song9]
+    train: [song3, song6, song9, song10]
+    val: [song3, song6, song9, song10]
+    test: [song3, song6, song9, song10]
   ood_song_splits:
-    ood_test: [song10]
+    ood_test: [song7]
   chunk_splits:
     train: [0.0, 0.8]
     val: [0.8, 0.9]
