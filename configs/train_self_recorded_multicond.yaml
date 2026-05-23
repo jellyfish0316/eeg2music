@@ -132,7 +132,7 @@ diffusion:
   beta_end: 0.02
 
 split:
-  subject_indices: [0, 1]
+  subject_indices: [0]
   val_ratio: 0.1
   song_splits:
     train: [song3, song6, song9, song10]
