@@ -48,7 +48,8 @@ def main() -> None:
     device = torch.device(
         cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
     )
-    condition_name = "passive"
+    condition_sources = cfg["data"].get("condition_sources") or ["passive"]
+    condition_name = "+".join(str(source) for source in condition_sources)
 
     ds_probe, _ = build_dataloader(
         cfg,
