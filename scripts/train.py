@@ -363,7 +363,8 @@ def run_one_condition(
     control_cfg = cfg.get("controlnet", {})
     train_cfg = cfg["train"]
 
-    condition_name = "passive"
+    condition_sources = data_cfg.get("condition_sources") or ["passive"]
+    condition_name = "+".join(str(source) for source in condition_sources)
 
     ds_train, dl_train = build_dataloader(
         cfg,
