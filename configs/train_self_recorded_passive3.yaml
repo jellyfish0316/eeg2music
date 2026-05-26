@@ -34,10 +34,10 @@ data:
   chunk_sec: 3.5
   eeg_fs: 1000
   audio_fs: 16000
-  batch_size: 2
-  num_workers: 0
+  batch_size: 4
+  num_workers: 2
   text_prompt: "Pop music"
-  eeg_chunk_cache_dir: data/precomputed/self_recorded_passive3_eeg_chunks_1khz
+  eeg_chunk_cache_dir: data/precomputed/self_recorded_eeg_chunks_1khz
 
 model:
   use_subject_adapter: true
@@ -82,7 +82,7 @@ diffusion:
   beta_end: 0.02
 
 split:
-  subject_indices: [0]
+  subject_indices: [1]
   val_ratio: 0.1
   song_splits:
     train: [song3, song6, song9, song10]

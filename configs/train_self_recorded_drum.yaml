@@ -57,7 +57,7 @@ data:
   batch_size: 4
   num_workers: 2
   text_prompt: "Pop music"
-  eeg_chunk_cache_dir: data/precomputed/self_recorded_drum_eeg_chunks_1khz
+  eeg_chunk_cache_dir: data/precomputed/self_recorded_eeg_chunks_1khz
 
 model:
   use_subject_adapter: true
