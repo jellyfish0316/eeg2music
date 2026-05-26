@@ -62,6 +62,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override target attention condition for every row. Useful when manifest condition_name is ambiguous.",
     )
+    p.add_argument(
+        "--score-only",
+        action="store_true",
+        help="Only compute CLAP scores against stems. Skip target correctness, margin, and confusion matrix.",
+    )
     p.add_argument("--output-dir", type=str, default="outputs/stem_retrieval_eval")
     return p.parse_args()
 
@@ -155,10 +160,14 @@ def main() -> None:
     for manifest_path, row in rows:
         generated_path = resolve_audio_path(row["generated_wav"], manifest_path, "generated")
         condition_name = str(row.get("condition_name", ""))
-        target_condition, target_stems = infer_target_stems(condition_name, target_map, args.target_condition)
-        missing_targets = [stem for stem in target_stems if stem not in args.stems]
-        if missing_targets:
-            raise ValueError(f"Target stems {missing_targets} are not in --stems {args.stems}")
+        if args.score_only:
+            target_condition = args.target_condition or condition_name
+            target_stems = []
+        else:
+            target_condition, target_stems = infer_target_stems(condition_name, target_map, args.target_condition)
+            missing_targets = [stem for stem in target_stems if stem not in args.stems]
+            if missing_targets:
+                raise ValueError(f"Target stems {missing_targets} are not in --stems {args.stems}")
 
         pred_wave = load_audio(generated_path, sample_rate)
         n_samples = int(pred_wave.shape[-1])
@@ -181,19 +190,26 @@ def main() -> None:
             )
 
         predicted_stem = max(scores, key=scores.get)
-        target_score = max(scores[stem] for stem in target_stems)
-        non_target_scores = [score for stem, score in scores.items() if stem not in target_stems]
-        if not non_target_scores:
-            raise ValueError("Need at least one non-target stem to compute target margin.")
-        non_target_best = max(non_target_scores)
-        margin = target_score - non_target_best
-        is_correct = predicted_stem in target_stems
+        if args.score_only:
+            target_score = None
+            non_target_best = None
+            margin = None
+            is_correct = None
+            target_label = None
+        else:
+            target_score = max(scores[stem] for stem in target_stems)
+            non_target_scores = [score for stem, score in scores.items() if stem not in target_stems]
+            if not non_target_scores:
+                raise ValueError("Need at least one non-target stem to compute target margin.")
+            non_target_best = max(non_target_scores)
+            margin = target_score - non_target_best
+            is_correct = predicted_stem in target_stems
 
-        correct += int(is_correct)
-        margins.append(margin)
-        target_label = "+".join(target_stems)
-        confusion.setdefault(target_label, {stem: 0 for stem in args.stems})
-        confusion[target_label][predicted_stem] += 1
+            correct += int(is_correct)
+            margins.append(margin)
+            target_label = "+".join(target_stems)
+            confusion.setdefault(target_label, {stem: 0 for stem in args.stems})
+            confusion[target_label][predicted_stem] += 1
 
         item = dict(row)
         item.update(
@@ -213,14 +229,33 @@ def main() -> None:
         per_sample.append(item)
 
     n = len(per_sample)
+    condition_stem_sums: dict[str, dict[str, float]] = {}
+    condition_counts: dict[str, int] = {}
+    for item in per_sample:
+        condition = str(item.get("condition_name", ""))
+        condition_counts[condition] = condition_counts.get(condition, 0) + 1
+        condition_stem_sums.setdefault(condition, {stem: 0.0 for stem in args.stems})
+        for stem in args.stems:
+            condition_stem_sums[condition][stem] += float(item["stem_scores"][stem])
+
+    stem_score_means_by_condition = {
+        condition: {
+            stem: condition_stem_sums[condition][stem] / condition_counts[condition]
+            for stem in args.stems
+        }
+        for condition in sorted(condition_counts)
+    }
+
     summary = {
         "num_samples": n,
-        "stem_retrieval_accuracy": correct / n,
-        "mean_target_margin": sum(margins) / n,
+        "score_only": bool(args.score_only),
+        "stem_retrieval_accuracy": None if args.score_only else correct / n,
+        "mean_target_margin": None if args.score_only else sum(margins) / n,
         "stems": args.stems,
         "target_map": target_map,
-        "confusion_counts": confusion,
-        "confusion_rows_normalized": {
+        "stem_score_means_by_condition": stem_score_means_by_condition,
+        "confusion_counts": None if args.score_only else confusion,
+        "confusion_rows_normalized": None if args.score_only else {
             target: {
                 pred: (count / sum(preds.values()) if sum(preds.values()) else 0.0)
                 for pred, count in preds.items()

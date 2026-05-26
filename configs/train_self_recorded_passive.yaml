@@ -1,0 +1,112 @@
+seed: 42
+
+experiment:
+  conditions: [passive]
+  seed: 42
+
+data:
+  songs:
+    - name: song3
+      mat_path: data/SelfRecorded_EEG_Processed/song3_passive_Processed.mat
+      audio_path: data/SelfRecorded_songs/wav_16k/song3.wav
+      data_key: data3
+    - name: song6
+      mat_path: data/SelfRecorded_EEG_Processed/song6_passive_Processed.mat
+      audio_path: data/SelfRecorded_songs/wav_16k/song6.wav
+      data_key: data6
+    - name: song7
+      mat_path: data/SelfRecorded_EEG_Processed/song7_passive_Processed.mat
+      audio_path: data/SelfRecorded_songs/wav_16k/song7.wav
+      data_key: data7
+    - name: song9
+      mat_path: data/SelfRecorded_EEG_Processed/song9_passive_Processed.mat
+      audio_path: data/SelfRecorded_songs/wav_16k/song9.wav
+      data_key: data9
+    - name: song10
+      mat_path: data/SelfRecorded_EEG_Processed/song10_passive_Processed.mat
+      audio_path: data/SelfRecorded_songs/wav_16k/song10.wav
+      data_key: data10
+
+  condition_sources: [passive]
+  eeg_time: 3500
+  expected_eeg_channels: 128
+  audio_samples: 56000
+  chunk_sec: 3.5
+  eeg_fs: 1000
+  audio_fs: 16000
+  batch_size: 4
+  num_workers: 2
+  text_prompt: "Pop music"
+  eeg_chunk_cache_dir: data/precomputed/self_recorded_passive_eeg_chunks_1khz
+
+model:
+  use_subject_adapter: true
+  subject_emb_dim: 64
+  projector:
+    channels: [256, 512, 1024, 2048]
+    strides: [5, 2, 2, 2]
+    lat_grid: null
+  unet:
+    cache_pipeline: true
+    text_cache_path: data/precomputed/audioldm2_text_pop_music.pt
+
+audio_encoder:
+  model_id: cvssp/audioldm2-music
+  sample_rate: 16000
+  freeze_vae: true
+  use_mode: true
+
+controlnet:
+  enabled: true
+  control_scale: 1.0
+  freeze_base_unet: true
+  copy_encoder_weights: true
+  inject_middle_block: true
+  zero_init: true
+  conditioning_mode: paper
+  trainable_modules:
+    - subject_adapter
+    - projector
+    - control_branch
+
+latent_cache:
+  enabled: true
+  path: data/precomputed/self_recorded_audio_latents.pt
+  latent_channels: 8
+  precompute_batch_size: 16
+  precompute_use_mode: true
+
+diffusion:
+  num_train_timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+
+split:
+  subject_indices: [0]
+  val_ratio: 0.1
+  song_splits:
+    train: [song3, song6, song9, song10]
+    val: [song3, song6, song9, song10]
+    test: [song3, song6, song9, song10]
+  ood_song_splits:
+    ood_test: [song7]
+  chunk_splits:
+    train: [0.0, 0.8]
+    val: [0.8, 0.9]
+    test: [0.9, 1.0]
+    ood_test: [0.0, 1.0]
+
+train:
+  device: cuda
+  model_dtype: float32
+  lr: 0.0001
+  epochs: 100
+  gradient_accumulation_steps: 3
+  grad_clip: 1.0
+  log_every: 10
+  validation_metric: clap
+  validation_num_inference_steps: 25
+  validation_generate_batches: 4
+  best_checkpoint_name: best_model.pt
+  output_root: outputs/self_recorded_sub0_passive_ep100
+  checkpoint_name: model.pt
