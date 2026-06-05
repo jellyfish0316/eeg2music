@@ -7,74 +7,74 @@ experiment:
 data:
   songs:
     - name: song3
-      mat_path: data/SelfRecorded_EEG_Processed/song3_passive_Processed.mat
+      mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song3_passive_Processed.mat
       audio_path: data/SelfRecorded_songs/wav_16k/song3.wav
       data_key: data3
       sources:
         guitar:
-          mat_path: data/SelfRecorded_EEG_Processed/song3_guitar_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song3_guitar_Processed.mat
           data_key: data3
         vocal:
-          mat_path: data/SelfRecorded_EEG_Processed/song3_vocal_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song3_vocal_Processed.mat
           data_key: data3
         drum:
-          mat_path: data/SelfRecorded_EEG_Processed/song3_drum_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song3_drum_Processed.mat
           data_key: data3
     - name: song6
-      mat_path: data/SelfRecorded_EEG_Processed/song6_passive_Processed.mat
+      mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song6_passive_Processed.mat
       audio_path: data/SelfRecorded_songs/wav_16k/song6.wav
       data_key: data6
       sources:
         guitar:
-          mat_path: data/SelfRecorded_EEG_Processed/song6_guitar_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song6_guitar_Processed.mat
           data_key: data6
         vocal:
-          mat_path: data/SelfRecorded_EEG_Processed/song6_vocal_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song6_vocal_Processed.mat
           data_key: data6
         drum:
-          mat_path: data/SelfRecorded_EEG_Processed/song6_drum_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song6_drum_Processed.mat
           data_key: data6
     - name: song7
-      mat_path: data/SelfRecorded_EEG_Processed/song7_passive_Processed.mat
+      mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song7_passive_Processed.mat
       audio_path: data/SelfRecorded_songs/wav_16k/song7.wav
       data_key: data7
       sources:
         guitar:
-          mat_path: data/SelfRecorded_EEG_Processed/song7_guitar_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song7_guitar_Processed.mat
           data_key: data7
         vocal:
-          mat_path: data/SelfRecorded_EEG_Processed/song7_vocal_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song7_vocal_Processed.mat
           data_key: data7
         drum:
-          mat_path: data/SelfRecorded_EEG_Processed/song7_drum_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song7_drum_Processed.mat
           data_key: data7
     - name: song9
-      mat_path: data/SelfRecorded_EEG_Processed/song9_passive_Processed.mat
+      mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song9_passive_Processed.mat
       audio_path: data/SelfRecorded_songs/wav_16k/song9.wav
       data_key: data9
       sources:
         guitar:
-          mat_path: data/SelfRecorded_EEG_Processed/song9_guitar_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song9_guitar_Processed.mat
           data_key: data9
         vocal:
-          mat_path: data/SelfRecorded_EEG_Processed/song9_vocal_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song9_vocal_Processed.mat
           data_key: data9
         drum:
-          mat_path: data/SelfRecorded_EEG_Processed/song9_drum_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song9_drum_Processed.mat
           data_key: data9
     - name: song10
-      mat_path: data/SelfRecorded_EEG_Processed/song10_passive_Processed.mat
+      mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song10_passive_Processed.mat
       audio_path: data/SelfRecorded_songs/wav_16k/song10.wav
       data_key: data10
       sources:
         guitar:
-          mat_path: data/SelfRecorded_EEG_Processed/song10_guitar_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song10_guitar_Processed.mat
           data_key: data10
         vocal:
-          mat_path: data/SelfRecorded_EEG_Processed/song10_vocal_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song10_vocal_Processed.mat
           data_key: data10
         drum:
-          mat_path: data/SelfRecorded_EEG_Processed/song10_drum_Processed.mat
+          mat_path: data/SelfRecorded_EEG_Processed_Interpolated/song10_drum_Processed.mat
           data_key: data10
 
   condition_sources: [guitar, vocal, drum]
@@ -87,7 +87,7 @@ data:
   batch_size: 2
   num_workers: 0
   text_prompt: "Pop music"
-  eeg_chunk_cache_dir: data/precomputed/self_recorded_multicond_eeg_chunks_1khz
+  eeg_chunk_cache_dir: data/precomputed/self_recorded_multicond_interp_eeg_chunks_1khz
 
 model:
   use_subject_adapter: true
@@ -158,5 +158,5 @@ train:
   validation_num_inference_steps: 25
   validation_generate_batches: 4
   best_checkpoint_name: best_model.pt
-  output_root: outputs/self_recorded_multicond_sub2_ep100
+  output_root: outputs/self_recorded_multicond_sub2_interp_ep100
   checkpoint_name: model.pt

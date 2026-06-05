@@ -132,6 +132,88 @@ def _parse_curry_events(ceo_path: Path) -> list[tuple[int, int]]:
     return events
 
 
+def _parse_channel_list(value: str | None) -> list[int]:
+    if value is None:
+        return []
+    channels = []
+    for item in re.split(r"[\s,]+", value.strip()):
+        if not item:
+            continue
+        ch = int(item)
+        if ch <= 0:
+            raise ValueError(f"Channel indices are 1-based and must be positive, got {ch}.")
+        channels.append(ch - 1)
+    return sorted(set(channels))
+
+
+def _impedance_bad_channels(
+    dpa_path: Path,
+    *,
+    keep_eeg_channels: int,
+    threshold: float,
+    max_bad_fraction: float,
+) -> list[int]:
+    text = _read_text(dpa_path)
+    rows = []
+    for line in _extract_list(text, "IMPEDANCE_VALUES"):
+        vals = []
+        for token in line.split():
+            try:
+                vals.append(float(token))
+            except ValueError:
+                pass
+        if len(vals) >= keep_eeg_channels and any(v >= 0 for v in vals[:keep_eeg_channels]):
+            rows.append(vals[:keep_eeg_channels])
+    if not rows:
+        return []
+
+    bad = []
+    for ch_idx in range(keep_eeg_channels):
+        max_value = max(row[ch_idx] for row in rows if row[ch_idx] >= 0)
+        if max_value >= threshold:
+            bad.append(ch_idx)
+
+    if len(bad) / float(keep_eeg_channels) > max_bad_fraction:
+        print(
+            f"warning: ignoring impedance-derived bad channels for {dpa_path}; "
+            f"{len(bad)}/{keep_eeg_channels} exceed threshold={threshold:g}. "
+            "The impedance table likely is not usable for this file.",
+            flush=True,
+        )
+        return []
+    return bad
+
+
+def _interpolate_bad_channels(signal: np.ndarray, bad_channels: list[int]) -> np.ndarray:
+    if not bad_channels:
+        return signal.astype(np.float32, copy=False)
+
+    n_channels = signal.shape[0]
+    bad = sorted({int(ch) for ch in bad_channels if 0 <= int(ch) < n_channels})
+    if not bad:
+        return signal.astype(np.float32, copy=False)
+
+    bad_set = set(bad)
+    valid = [idx for idx in range(n_channels) if idx not in bad_set]
+    if not valid:
+        raise ValueError("Cannot interpolate EEG: every channel is marked bad.")
+
+    out = signal.astype(np.float32, copy=True)
+    source = signal.astype(np.float32, copy=False)
+    for ch_idx in bad:
+        left = next((idx for idx in range(ch_idx - 1, -1, -1) if idx not in bad_set), None)
+        right = next((idx for idx in range(ch_idx + 1, n_channels) if idx not in bad_set), None)
+        if left is not None and right is not None:
+            out[ch_idx] = 0.5 * (source[left] + source[right])
+        elif left is not None:
+            out[ch_idx] = source[left]
+        elif right is not None:
+            out[ch_idx] = source[right]
+        else:
+            out[ch_idx] = source[valid[0]]
+    return out.astype(np.float32, copy=False)
+
+
 def _fallback_curry_paths(path: Path) -> tuple[Path, Path, Path]:
     data_path = path
     dpa_path = path.with_suffix(path.suffix + ".dpa")
@@ -220,10 +302,13 @@ def _get_eeg_picks_and_names(raw, *, keep_eeg_channels: int | None) -> tuple[np.
 def _preprocess_signal(
     signal: np.ndarray,
     *,
+    bad_channels: list[int] | None,
     robust_scale: bool,
     center_using_first_samples: int,
     clamp_std: float | None,
 ) -> np.ndarray:
+    if bad_channels:
+        signal = _interpolate_bad_channels(signal, bad_channels)
     if robust_scale:
         signal = _robust_scale(signal)
     signal = _center_using_first_samples(signal, center_using_first_samples)
@@ -242,6 +327,7 @@ def _load_cdt_signal(
     robust_scale: bool,
     center_using_first_samples: int,
     clamp_std: float | None,
+    bad_channels: list[int] | None,
 ) -> tuple[np.ndarray, float, list[str]]:
     mne = _import_mne()
     raw = mne.io.read_raw_curry(str(path), preload=True, verbose="ERROR")
@@ -262,6 +348,7 @@ def _load_cdt_signal(
     signal = raw.get_data(picks=picks).astype(np.float32, copy=False) * float(scale)
     signal = _preprocess_signal(
         signal,
+        bad_channels=bad_channels,
         robust_scale=robust_scale,
         center_using_first_samples=center_using_first_samples,
         clamp_std=clamp_std,
@@ -302,6 +389,7 @@ def convert_cdts(args: argparse.Namespace) -> None:
             robust_scale=not args.no_robust_scale,
             center_using_first_samples=args.center_using_first_samples,
             clamp_std=args.clamp_std,
+            bad_channels=_parse_channel_list(args.bad_channels_1based),
         )
         if channel_names is None:
             channel_names = names
@@ -411,6 +499,19 @@ def convert_cdt_events(args: argparse.Namespace) -> None:
                 raise ValueError(f"{path}: condition sampling rates differ unexpectedly.")
             signal = _preprocess_signal(
                 signal,
+                bad_channels=sorted(
+                    set(_parse_channel_list(args.bad_channels_1based))
+                    | set(
+                        _impedance_bad_channels(
+                            path.with_suffix(path.suffix + ".dpa"),
+                            keep_eeg_channels=signal.shape[0],
+                            threshold=float(args.auto_bad_impedance_threshold),
+                            max_bad_fraction=float(args.max_auto_bad_fraction),
+                        )
+                        if args.auto_bad_impedance_threshold is not None
+                        else []
+                    )
+                ),
                 robust_scale=not args.no_robust_scale,
                 center_using_first_samples=args.center_using_first_samples,
                 clamp_std=args.clamp_std,
@@ -468,6 +569,12 @@ def parse_args() -> argparse.Namespace:
     convert_parser.add_argument("--duration", type=float, default=None, help="Crop duration in seconds.")
     convert_parser.add_argument("--dst-fs", type=float, default=None, help="Resample to this EEG sampling rate.")
     convert_parser.add_argument("--scale", type=float, default=1.0, help="Multiply raw MNE data before preprocessing.")
+    convert_parser.add_argument(
+        "--bad-channels-1based",
+        type=str,
+        default=None,
+        help="Comma/space separated 1-based EEG channels to interpolate before scaling, e.g. '1,43,86'.",
+    )
     convert_parser.add_argument("--no-robust-scale", action="store_true", help="Do not median/IQR scale each channel.")
     convert_parser.add_argument("--center-using-first-samples", type=int, default=1000)
     convert_parser.add_argument("--clamp-std", type=float, default=None)
@@ -501,6 +608,24 @@ def parse_args() -> argparse.Namespace:
     events_parser.add_argument("--keep-eeg-channels", type=int, default=None)
     events_parser.add_argument("--dst-fs", type=float, default=None)
     events_parser.add_argument("--scale", type=float, default=1.0)
+    events_parser.add_argument(
+        "--bad-channels-1based",
+        type=str,
+        default=None,
+        help="Comma/space separated 1-based EEG channels to interpolate before scaling, e.g. '1,43,86'.",
+    )
+    events_parser.add_argument(
+        "--auto-bad-impedance-threshold",
+        type=float,
+        default=None,
+        help="Also interpolate channels whose CDT .dpa impedance is at or above this threshold.",
+    )
+    events_parser.add_argument(
+        "--max-auto-bad-fraction",
+        type=float,
+        default=0.5,
+        help="Ignore auto impedance bad channels if more than this fraction of EEG channels are flagged.",
+    )
     events_parser.add_argument("--no-robust-scale", action="store_true")
     events_parser.add_argument("--center-using-first-samples", type=int, default=1000)
     events_parser.add_argument("--clamp-std", type=float, default=None)
