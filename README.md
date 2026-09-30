@@ -8,8 +8,7 @@ Reference paper:
 
 Current repo focus:
 
-- passive EEG only
-- single-condition training
+- passive EEG (NMED-T) and multi-condition self-recorded EEG (guitar / vocal / drum)
 - pretrained diffusers AudioLDM2 U-Net backbone
 - ControlNet-style EEG conditioning
 - NMED-T style multi-song splits with optional OOD song evaluation
@@ -31,42 +30,53 @@ These are aligned to the current diffusers `AudioLDM2Pipeline` path used by the 
 
 ## What The Repo Supports Now
 
-- `passive` condition only
+- `passive` condition (NMED-T) and multi-condition (`guitar`, `vocal`, `drum`) for self-recorded EEG
 - fixed prompt from `data.text_prompt`
 - checkpoint selection by `val_clap`
 - train / val / test chunk splits on in-distribution songs
 - separate `ood_test` song split
 - precomputed AudioLDM2 latent cache
 - precomputed EEG chunk cache
+- EEG channel interpolation variant (see `_interp` configs)
 
 Removed from the main runtime path:
 
-- multi-attention conditions
-- per-instrument condition wiring
 - LOSO / fold training
 - dataset-side EEG preprocessing
 
 ## Repo Layout
 
-- [configs/train.yaml](/home/bryan/eeg/configs/train.yaml): main config
-- [scripts/train.py](/home/bryan/eeg/scripts/train.py): training entrypoint
-- [scripts/generate.py](/home/bryan/eeg/scripts/generate.py): generate `.wav` from a checkpoint
-- [scripts/evaluate_generation.py](/home/bryan/eeg/scripts/evaluate_generation.py): CLAP audio-audio evaluation against targets
-- [scripts/evaluate_audio_sets.py](/home/bryan/eeg/scripts/evaluate_audio_sets.py): set-level CLAP/text/Frechet-style evaluation
-- [scripts/precompute_audio_latents.py](/home/bryan/eeg/scripts/precompute_audio_latents.py): precompute AudioLDM2 latents
-- [scripts/precompute_eeg_chunks.py](/home/bryan/eeg/scripts/precompute_eeg_chunks.py): cut EEG chunk cache
-- [scripts/prepare_nmedt_raw_eeg.py](/home/bryan/eeg/scripts/prepare_nmedt_raw_eeg.py): inspect and convert raw NMED-T recordings
-- [scripts/check_mel_vocoder_compat.py](/home/bryan/eeg/scripts/check_mel_vocoder_compat.py): diagnose mel/vocoder mismatch and roundtrip noise
-- [datasets/condition_nmedt_dataset.py](/home/bryan/eeg/datasets/condition_nmedt_dataset.py): passive EEG dataset
-- [models/eeg_conditioned_audioldm2.py](/home/bryan/eeg/models/eeg_conditioned_audioldm2.py): main model
-- [models/eeg_projector.py](/home/bryan/eeg/models/eeg_projector.py): 1D EEG projector
-- [models/eeg_controlnet.py](/home/bryan/eeg/models/eeg_controlnet.py): EEG ControlNet branch
-- [models/audioldm2_unet_wrapper.py](/home/bryan/eeg/models/audioldm2_unet_wrapper.py): pretrained diffusers U-Net wrapper
-- [models/audioldm2_vae_wrapper.py](/home/bryan/eeg/models/audioldm2_vae_wrapper.py): AudioLDM2 VAE / decode / CLAP helper
+- [configs/train_NMEDT.yaml](configs/train_NMEDT.yaml): main config for NMED-T passive EEG
+- [configs/train_self_recorded_multicond.yaml](configs/train_self_recorded_multicond.yaml): self-recorded guitar + vocal + drum
+- [configs/train_self_recorded_multicond_interp.yaml](configs/train_self_recorded_multicond_interp.yaml): same but with interpolated EEG mats
+- [configs/train_self_recorded_passive.yaml](configs/train_self_recorded_passive.yaml): self-recorded passive only
+- [configs/train_self_recorded_passive3.yaml](configs/train_self_recorded_passive3.yaml): self-recorded passive × 3
+- [configs/train_self_recorded_passive3_interp.yaml](configs/train_self_recorded_passive3_interp.yaml): passive × 3 with interpolated EEG mats
+- [configs/train_self_recorded_guitar.yaml](configs/train_self_recorded_guitar.yaml): self-recorded guitar only
+- [configs/train_self_recorded_vocal.yaml](configs/train_self_recorded_vocal.yaml): self-recorded vocal only
+- [configs/train_self_recorded_drum.yaml](configs/train_self_recorded_drum.yaml): self-recorded drum only
+- [scripts/train.py](scripts/train.py): training entrypoint
+- [scripts/generate.py](scripts/generate.py): generate `.wav` from a checkpoint
+- [scripts/evaluate_generation.py](scripts/evaluate_generation.py): CLAP audio-audio evaluation against targets
+- [scripts/evaluate_audio_sets.py](scripts/evaluate_audio_sets.py): set-level CLAP/text/Frechet-style evaluation
+- [scripts/evaluate_stem_retrieval.py](scripts/evaluate_stem_retrieval.py): CLAP-based stem retrieval evaluation for multi-condition runs
+- [scripts/compare_unet_to_official.py](scripts/compare_unet_to_official.py): compare wrapper U-Net output to official AudioLDM2 U-Net
+- [scripts/precompute_audio_latents.py](scripts/precompute_audio_latents.py): precompute AudioLDM2 latents
+- [scripts/precompute_eeg_chunks.py](scripts/precompute_eeg_chunks.py): cut EEG chunk cache
+- [scripts/prepare_nmedt_raw_eeg.py](scripts/prepare_nmedt_raw_eeg.py): inspect and convert raw NMED-T recordings
+- [scripts/prepare_cdt_eeg.py](scripts/prepare_cdt_eeg.py): inspect and convert Curry / Neuroscan `.cdt` files
+- [scripts/check_mel_vocoder_compat.py](scripts/check_mel_vocoder_compat.py): diagnose mel/vocoder mismatch and roundtrip noise
+- [datasets/condition_nmedt_dataset.py](datasets/condition_nmedt_dataset.py): EEG dataset supporting passive and multi-condition (`condition_sources`) channel concatenation
+- [models/eeg_conditioned_audioldm2.py](models/eeg_conditioned_audioldm2.py): main model
+- [models/eeg_projector.py](models/eeg_projector.py): 1D EEG projector
+- [models/eeg_controlnet.py](models/eeg_controlnet.py): EEG ControlNet branch
+- [models/subject_adapter.py](models/subject_adapter.py): per-subject embedding adapter
+- [models/audioldm2_unet_wrapper.py](models/audioldm2_unet_wrapper.py): pretrained diffusers U-Net wrapper
+- [models/audioldm2_vae_wrapper.py](models/audioldm2_vae_wrapper.py): AudioLDM2 VAE / decode / CLAP helper
 
 ## Data Assumptions
 
-The default config expects:
+All configs share these data format requirements:
 
 - song-level EEG `.mat` files shaped as `[channels, time, subjects]`
 - one EEG file per song
@@ -75,11 +85,11 @@ The default config expects:
 - `eeg_fs = 1000`
 - `audio_fs = 16000`
 
-The current config uses:
+The NMED-T config (`train_NMEDT.yaml`) uses:
 
 - in-distribution songs: `song22` to `song30`
 - OOD song: `song21`
-- subject subset: `[1]` which means subject 2 if mats are zero-based indexed
+- subject subset: `[1]` — index 1 selects the second subject (zero-based)
 
 ## Raw NMED-T Conversion
 
@@ -134,7 +144,7 @@ python scripts/prepare_cdt_eeg.py convert \
   --trim-to-shortest
 ```
 
-If your `.cdt` is a continuous recording, first use `inspect` to check annotations/triggers, then pass `--tmin` and `--duration` for the song segment you want to export. After conversion, point `configs/train.yaml` at the new `.mat` and keep `data_key` aligned with the song, for example `data21`.
+If your `.cdt` is a continuous recording, first use `inspect` to check annotations/triggers, then pass `--tmin` and `--duration` for the song segment you want to export. After conversion, point the config at the new `.mat` and keep `data_key` aligned with the song, for example `data21`.
 
 If your PsychoPy task writes condition triggers like this:
 
@@ -166,9 +176,7 @@ data:
   expected_eeg_channels: 128
 ```
 
-The current training path uses only `passive`, so point a self-recorded config at `data/SelfRecorded_EEG_Processed/song7_passive_Processed.mat` unless you re-enable multi-condition training.
-
-For multi-condition EEG conditioning, set `data.condition_sources`. The dataset concatenates these sources on the EEG channel axis before passing them to the model. For example, 128-channel self-recorded EEG with three sources becomes 384 input channels.
+For single-condition self-recorded runs use `train_self_recorded_passive.yaml` and point `mat_path` at the passive mat. For multi-condition EEG conditioning, set `data.condition_sources`. The dataset concatenates these sources on the EEG channel axis before passing them to the model. For example, 128-channel self-recorded EEG with three sources becomes 384 input channels.
 
 Self-recorded example using `guitar + vocal + drum`:
 
@@ -201,9 +209,13 @@ data:
 
 If you use `scripts/precompute_eeg_chunks.py`, re-run it after changing `condition_sources` or source paths so the EEG chunk manifest matches the config.
 
+## Interpolated EEG Variants
+
+The `_interp` configs (`train_self_recorded_multicond_interp.yaml`, `train_self_recorded_passive3_interp.yaml`) point to `data/SelfRecorded_EEG_Processed_Interpolated/` instead of `data/SelfRecorded_EEG_Processed/`. These mats have had missing or noisy channels interpolated before saving. Use them when the raw `.cdt` conversion produces mats with bad channels. Everything else (training, generation, evaluation) works identically.
+
 ## Config Notes
 
-Important fields in [train.yaml](/home/bryan/eeg/configs/train.yaml):
+Important fields shared across all configs:
 
 - `data.songs`: full song list
 - `data.eeg_chunk_cache_dir`: EEG chunk cache directory
@@ -214,6 +226,20 @@ Important fields in [train.yaml](/home/bryan/eeg/configs/train.yaml):
 - `split.chunk_splits`: chunk ranges for each split
 - `train.validation_metric`: `clap` by default
 - `train.output_root`: output directory for checkpoints and results
+
+Pick the config that matches your data:
+
+| Config | Data | Condition |
+|--------|------|-----------|
+| `train_NMEDT.yaml` | NMED-T | passive |
+| `train_self_recorded_multicond.yaml` | self-recorded | guitar + vocal + drum |
+| `train_self_recorded_multicond_interp.yaml` | self-recorded (interpolated) | guitar + vocal + drum |
+| `train_self_recorded_passive.yaml` | self-recorded | passive |
+| `train_self_recorded_passive3.yaml` | self-recorded | passive × 3 |
+| `train_self_recorded_passive3_interp.yaml` | self-recorded (interpolated) | passive × 3 |
+| `train_self_recorded_guitar.yaml` | self-recorded | guitar |
+| `train_self_recorded_vocal.yaml` | self-recorded | vocal |
+| `train_self_recorded_drum.yaml` | self-recorded | drum |
 
 ## Environment
 
@@ -253,18 +279,26 @@ Run this when song-level EEG mats or chunk rules change:
 python scripts/precompute_eeg_chunks.py --config configs/train_self_recorded_multicond.yaml
 ```
 
+Replace the config with whichever one you are training with. The `_interp` configs need their own chunk cache because they point to different mat files.
+
 ## Training
 
-Minimal smoke:
+Minimal smoke test (NMED-T):
 
 ```bash
-python scripts/train.py --config configs/train.yaml --max-steps 20
+python scripts/train.py --config configs/train_NMEDT.yaml --max-steps 20
 ```
 
-Full run:
+Full run (NMED-T):
 
 ```bash
-python scripts/train.py --config configs/train.yaml
+python scripts/train.py --config configs/train_NMEDT.yaml
+```
+
+Self-recorded multi-condition:
+
+```bash
+python scripts/train.py --config configs/train_self_recorded_multicond.yaml
 ```
 
 Outputs are written under `train.output_root`, for example:
@@ -287,7 +321,7 @@ Generate in-distribution test audio:
 
 ```bash
 python scripts/generate.py \
-  --config configs/train.yaml \
+  --config configs/train_NMEDT.yaml \
   --checkpoint outputs/checked_byme_subject2_v1_ep100/best_model.pt \
   --split test \
   --num-inference-steps 50 \
@@ -298,7 +332,7 @@ Generate OOD audio:
 
 ```bash
 python scripts/generate.py \
-  --config configs/train.yaml \
+  --config configs/train_NMEDT.yaml \
   --checkpoint outputs/checked_byme_subject2_v1_ep100/best_model.pt \
   --split ood_test \
   --num-inference-steps 50 \
@@ -309,7 +343,7 @@ Generate no-control baseline:
 
 ```bash
 python scripts/generate.py \
-  --config configs/train.yaml \
+  --config configs/train_NMEDT.yaml \
   --checkpoint outputs/checked_byme_subject2_v1_ep100/best_model.pt \
   --split ood_test \
   --num-inference-steps 50 \
@@ -325,7 +359,7 @@ Useful generation flags:
 
 ## Evaluation
 
-Evaluate generated vs target audio with CLAP audio similarity:
+### CLAP audio similarity (generated vs target)
 
 ```bash
 python scripts/evaluate_generation.py \
@@ -333,9 +367,33 @@ python scripts/evaluate_generation.py \
   --output-dir outputs/generated/ood_real_eval
 ```
 
-The key number is:
+The key number is `mean_clap_audio_cosine`.
 
-- `mean_clap_audio_cosine`
+### Stem retrieval (multi-condition runs)
+
+Measures whether the generated audio retrieves the correct instrument stem over distractors using CLAP similarity. Stems are expected to be pre-separated with [htdemucs](https://github.com/facebookresearch/demucs) and placed under `--stems-root`.
+
+```bash
+python scripts/evaluate_stem_retrieval.py \
+  --manifest outputs/generated/test_real/manifest.json \
+  --stems-root data/SelfRecorded_songs/separated/htdemucs \
+  --output-dir outputs/generated/test_real_stem_eval
+```
+
+Multiple manifests can be passed to `--manifest` to compare runs side by side. The default stems are `drums`, `other_bass`, `vocals`. The condition names used during training map to htdemucs buckets as follows: `drum` → `drums`, `vocal` → `vocals`, `guitar` → `other_bass` (htdemucs groups guitar/bass/piano under `other` and `bass` tracks).
+
+### Set-level evaluation
+
+Compares a generated set against a reference set using CLAP text similarity and Fréchet-style CLAP audio distance:
+
+```bash
+python scripts/evaluate_audio_sets.py \
+  --candidate generated=outputs/generated/test_real \
+  --reference outputs/target_audio \
+  --output outputs/audio_set_eval/summary.json
+```
+
+`--candidate` accepts `label=path` and can be repeated to compare multiple runs at once. `--reference` and `--candidate` paths can be a wav directory, `manifest.json`, or a manifest root directory.
 
 ## Audio Path Diagnostics
 
@@ -359,6 +417,16 @@ and writes:
 
 This is the fastest way to tell whether noise is already present before EEG conditioning.
 
+### U-Net output comparison
+
+To verify the wrapper U-Net matches the official AudioLDM2 U-Net numerically:
+
+```bash
+python scripts/compare_unet_to_official.py \
+  --config configs/train_NMEDT.yaml \
+  --output outputs/unet_compare.json
+```
+
 ## Tests
 
 Run the core tests:
@@ -370,9 +438,18 @@ python -m pytest tests/test_generation_pipeline.py tests/test_paper_alignment_sm
 ## Important Practical Notes
 
 - Old checkpoints from the pre-refactor latent layout are not compatible with the current code.
-- If latent layout or mel preprocessing changes, re-run [precompute_audio_latents.py](/home/bryan/eeg/scripts/precompute_audio_latents.py) before training.
+- If latent layout or mel preprocessing changes, re-run [precompute_audio_latents.py](scripts/precompute_audio_latents.py) before training.
 - `best_model.pt` is the main checkpoint because selection follows `val_clap`.
 - The current audio path is aligned to diffusers layout, but mel/vocoder compatibility should still be checked empirically.
+- After switching between a regular and `_interp` config, re-run [precompute_eeg_chunks.py](scripts/precompute_eeg_chunks.py) since the mat paths differ.
+
+## Limitations
+
+- **Multi-condition EEG quantity imbalance**: the self-recorded dataset has more passive trials than attention-directed (guitar / vocal / drum) trials. This can affect model convergence when all three conditions are concatenated.
+- **Single subject per run**: `split.subject_indices` currently selects one subject at a time. Cross-subject generalization requires re-running with different index settings or extending the training loop.
+- **No online EEG preprocessing**: artifact rejection, bandpass filtering, and rereferencing are expected to be done during the `.mat` conversion step (`prepare_nmedt_raw_eeg.py` / `prepare_cdt_eeg.py`). The dataset loader does not apply any EEG preprocessing.
+- **Fixed text prompt**: the model uses a single global text prompt (`data.text_prompt`) for all samples. Per-song or per-chunk text conditioning is not wired up.
+- **Checkpoint compatibility**: checkpoints are not compatible across latent layout changes. Re-precompute latents and retrain when the mel or VAE path changes.
 
 ## Citation
 
