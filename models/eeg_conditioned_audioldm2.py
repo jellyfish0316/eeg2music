@@ -180,6 +180,7 @@ class EEGConditionedAudioLDM2(nn.Module):
         timesteps: torch.Tensor,
         control_scale: float | None = None,
         use_control: bool = True,
+        use_subject_adapter: bool | None = None,
         text_conditioning: dict[str, torch.Tensor | None] | None = None,
     ) -> dict[str, torch.Tensor | dict[str, object] | None]:
         if zt.dim() != 4:
@@ -187,7 +188,10 @@ class EEGConditionedAudioLDM2(nn.Module):
         if zt.shape[1] != self.latent_channels:
             raise RuntimeError(f"zt channels ({zt.shape[1]}) != model latent_channels ({self.latent_channels})")
 
-        if self.use_subject_adapter:
+        subject_adapter_enabled = self.use_subject_adapter and (
+            True if use_subject_adapter is None else bool(use_subject_adapter)
+        )
+        if subject_adapter_enabled:
             eeg = self.subject_adapter(eeg, subject_idx)
 
         unet_dtype = self.control_unet.dtype
@@ -240,6 +244,7 @@ class EEGConditionedAudioLDM2(nn.Module):
             "eps_pred": eps_pred,
             "control_residuals": control_residuals,
             "use_control": torch.tensor(use_control, device=zt.device),
+            "use_subject_adapter": torch.tensor(subject_adapter_enabled, device=zt.device),
         }
 
     def forward(

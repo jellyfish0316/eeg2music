@@ -150,7 +150,7 @@ def test_run_one_condition_prefers_higher_clap_over_lower_val_loss(
     tmp_path: Path,
 ) -> None:
     install_fake_training_stack(monkeypatch)
-    val_losses = iter([0.10, 0.01, 0.30])
+    val_losses = iter([0.10, 0.01, 0.30, 0.40])
     val_claps = iter([0.20, 0.35])
 
     monkeypatch.setattr(train_module, "evaluate_loss", lambda *args, **kwargs: next(val_losses))

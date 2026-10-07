@@ -305,7 +305,7 @@ def build_test_model(
         enable_audio_encoder=False,
         latent_channels=8,
         latent_grid=(8, 87, 16),
-        projector_use_linear_fallback=True,
+        projector_channels=(16, 16, 16, 16),
         audio_model_id="fake/audioldm2",
         text_prompt="Pop music",
         text_cache_path=text_cache_path,
@@ -398,7 +398,7 @@ def test_paper_aligned_forward_backward_smoke(monkeypatch: pytest.MonkeyPatch) -
     model = build_test_model(monkeypatch)
     assert FakeAudioLDM2Pipeline.encode_prompt_calls == 1
 
-    eeg = torch.randn(2, 12, 437)
+    eeg = torch.randn(2, 12, 3500)
     z0 = torch.randn(2, 8, 87, 16)
     subject_idx = torch.tensor([0, 1], dtype=torch.long)
     timesteps = model.sample_timesteps(batch_size=2, device=torch.device("cpu"))
@@ -484,29 +484,28 @@ def test_derive_latent_grid_prefers_config_then_cache_then_checkpoint(monkeypatc
     assert derive_latent_grid(cfg, dataset=ds, device=torch.device("cpu")) == (8, 9, 10)
 
 
-def test_projector_uses_linear_fallback_only_when_needed() -> None:
+def test_projector_trims_single_extra_temporal_step() -> None:
     projector = EEGProjector(
         in_channels=12,
+        conv_channels=(16, 16, 16, 16),
         latent_grid=(8, 87, 16),
-        use_linear_fallback=True,
     )
-    eeg = torch.randn(2, 12, 437)
+    eeg = torch.randn(2, 12, 3500)
     out = projector(eeg)
     assert out.shape == (2, 8, 87, 16)
-    assert projector.linear_fallback is not None
 
 
-def test_projector_raises_when_fallback_disabled_and_temporal_length_mismatches() -> None:
+def test_projector_raises_when_temporal_length_mismatches() -> None:
     projector = EEGProjector(
         in_channels=12,
+        conv_channels=(16, 16, 16, 16),
         latent_grid=(8, 87, 16),
-        use_linear_fallback=False,
     )
     eeg = torch.randn(2, 12, 437)
-    with pytest.raises(RuntimeError, match="linear fallback is disabled"):
+    with pytest.raises(RuntimeError, match="does not match checkpoint-derived latent grid"):
         projector(eeg)
 
 
 if __name__ == "__main__":
-    test_projector_uses_linear_fallback_only_when_needed()
+    test_projector_trims_single_extra_temporal_step()
     print("paper alignment smoke ok")

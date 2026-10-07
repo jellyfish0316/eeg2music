@@ -156,6 +156,10 @@ def main() -> None:
     correct = 0
     margins = []
     confusion = {}
+    # Every model/mode is evaluated against the same 48 target chunks. Cache
+    # normalized stem features once per (song, chunk, stem), and extract each
+    # generated waveform feature once instead of once for every stem.
+    stem_feature_cache: dict[tuple[str, int, str, int], torch.Tensor] = {}
 
     for manifest_path, row in rows:
         generated_path = resolve_audio_path(row["generated_wav"], manifest_path, "generated")
@@ -174,20 +178,34 @@ def main() -> None:
         chunk_sec = n_samples / float(sample_rate)
         chunk_idx = int(row["chunk_idx"])
         offset = chunk_idx * chunk_sec
+        pred_features = audio_helper.get_audio_features(
+            pred_wave,
+            sample_rate=sample_rate,
+            normalize=True,
+        )
 
         scores = {}
         for stem in args.stems:
-            stem_path = stems_root / str(row["song_name"]) / f"{stem}.wav"
-            if not stem_path.exists():
-                raise FileNotFoundError(f"Missing stem file: {stem_path}")
-            stem_wave = load_stem_chunk(stem_path, sample_rate, offset, chunk_sec, n_samples)
-            scores[stem] = float(
-                audio_helper.compute_audio_similarity(
-                    pred_wave,
+            song_name = str(row["song_name"])
+            cache_key = (song_name, chunk_idx, stem, n_samples)
+            stem_features = stem_feature_cache.get(cache_key)
+            if stem_features is None:
+                stem_path = stems_root / song_name / f"{stem}.wav"
+                if not stem_path.exists():
+                    raise FileNotFoundError(f"Missing stem file: {stem_path}")
+                stem_wave = load_stem_chunk(stem_path, sample_rate, offset, chunk_sec, n_samples)
+                stem_features = audio_helper.get_audio_features(
                     stem_wave,
                     sample_rate=sample_rate,
-                )[0].item()
-            )
+                    normalize=True,
+                )
+                stem_feature_cache[cache_key] = stem_features
+            if pred_features.shape != stem_features.shape:
+                raise RuntimeError(
+                    "Generated/stem audio feature shape mismatch: "
+                    f"{tuple(pred_features.shape)} vs {tuple(stem_features.shape)}"
+                )
+            scores[stem] = float((pred_features * stem_features).sum(dim=-1)[0].item())
 
         predicted_stem = max(scores, key=scores.get)
         if args.score_only:
@@ -224,6 +242,7 @@ def main() -> None:
                 "best_non_target_score": non_target_best,
                 "target_margin": margin,
                 "stem_scores": scores,
+                **{f"{stem}_clap": score for stem, score in scores.items()},
             }
         )
         per_sample.append(item)

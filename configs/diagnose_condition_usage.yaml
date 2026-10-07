@@ -1,0 +1,49 @@
+version: 1
+paper_config: configs/evaluate_paper_controls.yaml
+run_id: condition_diagnostics_s013
+output_root: results/condition_diagnostics
+
+jobs:
+  - multicond_train_all_s013
+  - passive3_train_all_s013
+
+generation:
+  num_inference_steps: 25
+  guidance_scale: 3.5
+  eta: 0.0
+  generation_seed: 42
+
+ood_ablation:
+  split: ood_test
+  song: song7
+  subjects: [0, 1, 3]
+  chunks: [0, 12, 24, 36]
+  fixed_source_chunk: 47
+  prototype_split: train
+  modes:
+    - correct
+    - within_song_shuffled
+    - fixed_same_subject
+    - dataset_prototype
+    - subject_adapter_off
+    - adapter_off
+    - zero_eeg
+
+cross_song:
+  split: val
+  subjects: [0]
+  target_song: song3
+  source_song: song6
+  local_chunks: [0, 1, 2, 3]
+  within_song_shift: 2
+  modes: [correct, within_song_shuffled, cross_song_same_subject]
+
+bootstrap:
+  num_resamples: 10000
+  seed: 100
+
+decision_gate:
+  minimum_mean_clap_drop: 0.01
+  minimum_generated_clap_distance: 0.01
+  require_ci_above_zero: true
+

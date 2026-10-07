@@ -28,6 +28,7 @@ data/
 *.bin
 runs/
 outputs/
+results/
 checkpoints/
 logs/
 

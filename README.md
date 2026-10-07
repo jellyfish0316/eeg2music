@@ -91,6 +91,20 @@ The NMED-T config (`train_NMEDT.yaml`) uses:
 - OOD song: `song21`
 - subject subset: `[1]` — index 1 selects the second subject (zero-based)
 
+### Self-recorded target songs
+
+The self-recorded experiments use the following target-song sources. Converted
+audio is stored as 16 kHz mono WAV under
+`data/SelfRecorded_songs/wav_16k/`.
+
+| Song | Target | Source |
+| --- | --- | --- |
+| `song3` | Radiohead — Just | [YouTube](https://www.youtube.com/watch?v=oIFLtNYI3Ls) |
+| `song6` | Weezer — Island In The Sun | [YouTube](https://www.youtube.com/watch?v=erG5rgNYSdk) |
+| `song7` | Nirvana — About A Girl (Remastered) | [YouTube](https://www.youtube.com/watch?v=JIx2H-plXdU) |
+| `song9` | Måneskin — I WANNA BE YOUR SLAVE | [YouTube](https://www.youtube.com/watch?v=yOb9Xaug35M) |
+| `song10` | Red Hot Chili Peppers — Can't Stop | [YouTube](https://www.youtube.com/watch?v=8DyziWtkfBw) |
+
 ## Raw NMED-T Conversion
 
 If you start from raw MATLAB v7.3 participant recordings, first inspect them:
@@ -426,6 +440,200 @@ python scripts/compare_unet_to_official.py \
   --config configs/train_NMEDT.yaml \
   --output outputs/unet_compare.json
 ```
+
+## Paper Control Evaluations
+
+The pretrained-prior floor and inference-time shuffled EEG controls are driven by
+`configs/evaluate_paper_controls.yaml`. The registry names the historical
+train-all experiment explicitly as `train-all (S0,S1,S3)`; subject 2 is not
+silently included in that row. It also records the subject-wise S2 interpolation
+variant and the three available LOSO held-out subjects.
+
+Run commands from the `eeg` conda environment. A writable Numba cache avoids
+environment-site-package cache errors:
+
+```bash
+export NUMBA_CACHE_DIR=/tmp/eeg2music_numba_cache
+conda activate eeg
+
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage preflight \
+  --jobs multicond_train_all_s013 passive3_train_all_s013
+
+# Only needed when the processed MAT files have not been restored.
+# This also stages the exact archived target WAV into data/paper_controls/;
+# it does not overwrite data/SelfRecorded_songs.
+# Raw CDT/sidecars are staged once under data/paper_controls/raw_cdt so the
+# non-interpolated and interpolated conversions do not each stream from GVFS.
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage prepare-data
+
+# One-time optional dependency: pip install demucs
+# Then writes an explicitly labelled HTDemucs other+bass guitar proxy.
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage prepare-stems
+
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage generate --mode correct \
+  --jobs multicond_train_all_s013 passive3_train_all_s013
+
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage generate --mode shuffled \
+  --jobs multicond_train_all_s013 passive3_train_all_s013
+
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage generate --mode pretrained
+
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml --stage score
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml --stage summarize
+```
+
+The default shuffle is ten deterministic same-subject, same-song cyclic
+derangements with a minimum five-chunk distance. MULTICOND moves the full
+`guitar+vocal+drum` tensor as one row. PASSIVE3 verifies that its three branches
+remain byte-for-byte equal. Correct, shuffled, and pretrained modes use the same
+stable seed for a given target song/chunk.
+
+A full shuffled run automatically scores the corresponding full correct
+manifest and refuses to start unless each configured archived CLAP regression
+is within the YAML tolerance. A `--max-samples` shuffled smoke run deliberately
+defers this gate so the two-sample smoke test can precede the full regression.
+
+Results are written under `results/paper_controls/<run_id>/` with per-permutation
+mapping JSON, per-chunk overall/stem scores, summary CSV/JSON, paired bootstrap
+intervals, and a regression gate against the archived correct CLAP means. The
+stem called `guitar_proxy_other_bass` is an HTDemucs `other + bass` proxy and
+must not be reported as an isolated guitar stem.
+
+### Cross-song and temporal-shift controls
+
+Two additional inference-time controls reuse the same Train-All checkpoints,
+target audio, shared per-target diffusion seeds, and CLAP scoring as the
+`correct`/`shuffled`/`pretrained` conditions above. No checkpoint is retrained
+or modified.
+
+* **`cross_song`** — condition on EEG from the *same participant and attention
+  condition* but a *different song* (same subject, `source_song != target_song`).
+  The default `ood_test` dataset only contains the held-out song, so cross-song
+  generation builds one extra dataset spanning every configured song at its
+  full chunk range (`scripts.generate.build_full_song_pool_dataset`) purely to
+  address other-song EEG rows; the target rows and their audio are identical to
+  `correct`. Because MULTICOND's `[guitar,vocal,drum]` channels and PASSIVE3's
+  triplicated passive channel are always built from one dataset row, swapping
+  the whole EEG tensor to a single source row automatically keeps all
+  components tied to the same source song — no extra plumbing was needed for
+  that requirement. Sources are distributed across eligible songs with a
+  seeded, deterministic, reproducible pairing (`build_cross_song_mappings` in
+  `utils/evaluation_pairing.py`); subjects with only one recorded song are
+  reported as excluded (`cross_song_mappings/<job_id>/excluded_targets.json`)
+  rather than silently paired, and `cross_song.on_failure` controls whether
+  that aborts the run or proceeds.
+* **`temporal_shift`** — condition on EEG from the *same participant and song*
+  but a fixed signed chunk offset (`source_chunk = target_chunk + offset`).
+  Chunks are sliced back-to-back with no overlap, so the true stride equals
+  `chunk_sec` exactly (`chunk_timestamp_seconds` in `utils/evaluation_pairing.py`
+  documents this). Shifts never cross a song boundary; targets whose shifted
+  chunk would fall outside the song are excluded and reported, never wrapped
+  or borrowed from another song. Offset `0` is never regenerated — it is read
+  back from `correct` at analysis time — and the within-song `shuffled`
+  results are reused as the "random within-song" curve point.
+
+Run a metadata-only dry run before spending GPU time. It builds every
+requested mapping (cross-song and every temporal offset), validates every
+constraint (different-song sourcing, same-song/exact-offset shifting,
+contiguous chronological chunk ordering), and reports target/exclusion/source
+counts without generating any audio:
+
+```bash
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage dry-run \
+  --jobs multicond_train_all_s013 passive3_train_all_s013
+```
+
+Generation and scoring slot into the same stage machinery as the existing
+conditions:
+
+```bash
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage generate --mode cross_song \
+  --jobs multicond_train_all_s013 passive3_train_all_s013
+
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml \
+  --stage generate --mode temporal_shift \
+  --jobs multicond_train_all_s013 passive3_train_all_s013
+
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml --stage score
+python scripts/run_paper_evaluation.py \
+  --config configs/evaluate_paper_controls.yaml --stage summarize
+```
+
+`--stage summarize` extends `metrics/summary.json` with
+`correct_minus_cross_song`, `cross_song_minus_pretrained`, and
+`protocol_gain_multicond_minus_passive3_cross_song`, and writes a separate
+`metrics/temporal_shift/` directory: `temporal_shift_tidy.csv` (one row per
+model x participant x target x offset, with chunk and second offsets, source
+chunk/timestamp, and CLAP score), `temporal_shift_aggregate.csv` (one row per
+model x offset with N, mean/SD/SEM, the paired correct-minus-shift bootstrap
+under both common-support and maximum-available modes, and a Holm-adjusted
+p-value), and `temporal_shift_summary.json` (the full nested report, including
+the participant-stratified means and the Pearson correlation between
+`|offset|` and CLAP degradation). `temporal_shift.analysis_mode` in the YAML
+selects which of common-support/maximum-available is treated as primary;
+common-support is the default so every offset in the curve is compared on the
+same targets.
+
+Plot the curve, the correct-minus-shift difference, and the
+participant-stratified panels from that summary JSON:
+
+```bash
+python scripts/plot_temporal_shift.py \
+  --summary results/paper_controls/paper_controls_s013/metrics/temporal_shift/temporal_shift_summary.json \
+  --output-dir results/paper_controls/paper_controls_s013/metrics/temporal_shift/plots
+```
+
+Both controls are configured under `cross_song:` and `temporal_shift:` in
+`configs/evaluate_paper_controls.yaml` (permutation count/mapping seed,
+offsets, random-within-song reuse, analysis mode) — nothing here is
+hard-coded in the scripts.
+
+### Condition-usage diagnostic gate
+
+Before expanding the registry to the remaining Table 1 jobs, run the small
+condition diagnostic configured in `configs/diagnose_condition_usage.yaml`:
+
+```bash
+export NUMBA_CACHE_DIR=/tmp/eeg2music_numba_cache
+conda activate eeg
+
+# Optional one-target/two-step wiring check.
+python scripts/run_condition_diagnostics.py \
+  --config configs/diagnose_condition_usage.yaml --smoke
+
+# Formal sparse-chunk diagnostic for the two train-all checkpoints.
+python scripts/run_condition_diagnostics.py \
+  --config configs/diagnose_condition_usage.yaml
+```
+
+The OOD diagnostic compares correct, within-song shuffled, fixed same-subject,
+dataset-prototype, zero-EEG, subject-adapter-off, and full control-path-off
+conditions with paired diffusion seeds. `adapter_off` means the trained
+ControlNet/control path is bypassed; `subject_adapter_off` disables only the
+subject adapter. A separate validation diagnostic replaces song-3 EEG with
+same-subject song-6 EEG. Outputs include target CLAP, generated-audio CLAP
+distance, latent and mel differences, and per-layer ControlNet residual norms
+under `results/condition_diagnostics/<run_id>/`.
 
 ## Tests
 

@@ -219,6 +219,10 @@ def _fallback_curry_paths(path: Path) -> tuple[Path, Path, Path]:
     dpa_path = path.with_suffix(path.suffix + ".dpa")
     ceo_path = path.with_suffix(path.suffix + ".ceo")
     if not dpa_path.exists():
+        dpa_path = path.with_suffix(".dpa")
+    if not ceo_path.exists():
+        ceo_path = path.with_suffix(".ceo")
+    if not dpa_path.exists():
         raise FileNotFoundError(f"Missing Curry header: {dpa_path}")
     if not ceo_path.exists():
         raise FileNotFoundError(f"Missing Curry events: {ceo_path}")
@@ -503,7 +507,7 @@ def convert_cdt_events(args: argparse.Namespace) -> None:
                     set(_parse_channel_list(args.bad_channels_1based))
                     | set(
                         _impedance_bad_channels(
-                            path.with_suffix(path.suffix + ".dpa"),
+                            _fallback_curry_paths(path)[1],
                             keep_eeg_channels=signal.shape[0],
                             threshold=float(args.auto_bad_impedance_threshold),
                             max_bad_fraction=float(args.max_auto_bad_fraction),

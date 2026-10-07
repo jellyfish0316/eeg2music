@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
+import statistics
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,9 +40,7 @@ def load_rows(paths: list[str]) -> list[dict]:
     return rows
 
 
-def main() -> None:
-    args = parse_args()
-    rows = load_rows(args.manifest)
+def evaluate_rows(rows: list[dict], *, output_dir: str | Path) -> tuple[Path, Path]:
     if len(rows) == 0:
         raise ValueError("No generated samples found in the provided manifests.")
 
@@ -71,27 +71,46 @@ def main() -> None:
         )
         item = dict(row)
         item["clap_audio_cosine"] = score
+        item["overall_clap"] = score
         item["pred_sample_rate"] = int(pred_sr)
         item["target_sample_rate"] = int(target_sr)
         per_sample.append(item)
         scores.append(score)
 
-    output_dir = Path(args.output_dir)
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     per_sample_path = output_dir / "per_sample_scores.json"
+    per_sample_csv_path = output_dir / "per_sample_scores.csv"
     summary_path = output_dir / "summary.json"
     per_sample_path.write_text(json.dumps(per_sample, ensure_ascii=False, indent=2), encoding="utf-8")
+    if per_sample:
+        fieldnames = sorted(set().union(*(item.keys() for item in per_sample)))
+        with per_sample_csv_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(per_sample)
     summary_path.write_text(
         json.dumps(
             {
                 "num_samples": len(per_sample),
                 "mean_clap_audio_cosine": float(sum(scores) / len(scores)),
+                "median_clap_audio_cosine": float(statistics.median(scores)),
+                "std_clap_audio_cosine": float(statistics.stdev(scores)) if len(scores) > 1 else 0.0,
+                "min_clap_audio_cosine": float(min(scores)),
+                "max_clap_audio_cosine": float(max(scores)),
             },
             ensure_ascii=False,
             indent=2,
         ),
         encoding="utf-8",
     )
+    return per_sample_path, summary_path
+
+
+def main() -> None:
+    args = parse_args()
+    rows = load_rows(args.manifest)
+    per_sample_path, summary_path = evaluate_rows(rows, output_dir=args.output_dir)
     print(f"saved: {per_sample_path}", flush=True)
     print(f"saved: {summary_path}", flush=True)
 

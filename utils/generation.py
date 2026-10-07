@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import Any, Callable, Mapping
 
 import soundfile as sf
 import torch
@@ -120,6 +121,8 @@ def generate_latents(
     control_scale: float | None = None,
     guidance_scale: float = 3.5,
     negative_prompt: str = "",
+    use_subject_adapter: bool | None = None,
+    diagnostic_callback: Callable[[int, torch.Tensor, Mapping[str, Any]], None] | None = None,
 ) -> torch.Tensor:
     model.eval()
     device = eeg.device
@@ -164,7 +167,7 @@ def generate_latents(
         negative_prompt=negative_prompt,
     )
 
-    for timestep in scheduler.timesteps:
+    for step_index, timestep in enumerate(scheduler.timesteps):
         latent_model_input = latents
         eeg_input = eeg
         subject_input = subject_idx
@@ -180,15 +183,22 @@ def generate_latents(
             device=device,
             dtype=torch.long,
         )
+        predict_kwargs = {
+            "eeg": eeg_input,
+            "subject_idx": subject_input,
+            "zt": latent_model_input,
+            "timesteps": timestep_batch,
+            "use_control": use_control,
+            "control_scale": control_scale,
+            "text_conditioning": text_conditioning,
+        }
+        if use_subject_adapter is not None:
+            predict_kwargs["use_subject_adapter"] = bool(use_subject_adapter)
         pred = model.predict_noise(
-            eeg=eeg_input,
-            subject_idx=subject_input,
-            zt=latent_model_input,
-            timesteps=timestep_batch,
-            use_control=use_control,
-            control_scale=control_scale,
-            text_conditioning=text_conditioning,
+            **predict_kwargs,
         )
+        if diagnostic_callback is not None:
+            diagnostic_callback(step_index, timestep, pred)
         noise_pred = pred["eps_pred"]
         if do_classifier_free_guidance:
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)

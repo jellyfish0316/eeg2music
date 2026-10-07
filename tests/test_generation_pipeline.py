@@ -104,8 +104,30 @@ class FakeAudioPipeline:
         return self.vocoder(mel).cpu().float()
 
 
+class DummyPipeline:
+    vae_scale_factor = 1
+
+    def prepare_latents(self, batch_size, channels, height, dtype, device, generator):
+        return torch.randn(batch_size, channels, height, 8, dtype=dtype, device=device, generator=generator)
+
+    def prepare_extra_step_kwargs(self, generator, eta):
+        del generator, eta
+        return {}
+
+
 class DummyControlUNet:
     dtype = torch.float32
+
+    def __init__(self) -> None:
+        self.pipeline = DummyPipeline()
+
+    def get_text_conditioning_with_guidance(self, **kwargs):
+        del kwargs
+        return {
+            "encoder_hidden_states": None,
+            "encoder_hidden_states_1": None,
+            "attention_mask": None,
+        }
 
 
 class DummyScheduler:
@@ -134,8 +156,17 @@ class DummyModel:
     def eval(self):
         return self
 
-    def predict_noise(self, eeg, subject_idx, zt, timesteps, control_scale=None, use_control=True):
-        del eeg, subject_idx, timesteps, control_scale, use_control
+    def predict_noise(
+        self,
+        eeg,
+        subject_idx,
+        zt,
+        timesteps,
+        control_scale=None,
+        use_control=True,
+        text_conditioning=None,
+    ):
+        del eeg, subject_idx, timesteps, control_scale, use_control, text_conditioning
         self.calls += 1
         return {"eps_pred": torch.zeros_like(zt)}
 
@@ -175,3 +206,22 @@ def test_generate_latents_runs_fixed_number_of_steps() -> None:
     )
     assert latents.shape == (3, 4, 8, 8)
     assert model.calls == 5
+
+
+def test_generate_latents_diagnostic_callback_observes_each_step() -> None:
+    model = DummyModel()
+    scheduler = DummyScheduler()
+    observed = []
+    generate_latents(
+        model,
+        eeg=torch.randn(1, 12, 437),
+        subject_idx=torch.tensor([0]),
+        num_inference_steps=3,
+        scheduler=scheduler,
+        use_control=True,
+        diagnostic_callback=lambda step, timestep, pred: observed.append(
+            (step, int(timestep.item()), tuple(pred["eps_pred"].shape))
+        ),
+    )
+    # Guidance duplicates the latent batch into unconditional/conditional rows.
+    assert observed == [(0, 2, (2, 4, 8, 8)), (1, 1, (2, 4, 8, 8)), (2, 0, (2, 4, 8, 8))]

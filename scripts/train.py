@@ -177,6 +177,7 @@ def build_model_from_dataset(
     *,
     dataset: ConditionNMEDTDataset,
     device: torch.device,
+    enable_audio_encoder_override: bool | None = None,
 ) -> EEGConditionedAudioLDM2:
     def resolve_model_dtype(value: object | None) -> torch.dtype:
         if value is None:
@@ -228,7 +229,11 @@ def build_model_from_dataset(
         audio_use_mode=bool(audio_cfg.get("use_mode", False)),
         text_prompt=str(data_cfg.get("text_prompt", "Pop music")),
         text_cache_path=model_cfg.get("unet", {}).get("text_cache_path"),
-        enable_audio_encoder=not use_precomputed_latents,
+        enable_audio_encoder=(
+            not use_precomputed_latents
+            if enable_audio_encoder_override is None
+            else bool(enable_audio_encoder_override)
+        ),
         latent_channels=latent_channels,
         latent_grid=latent_grid,
         projector_channels=tuple(model_cfg.get("projector", {}).get("channels", [256, 512, 1024, 2048])),
